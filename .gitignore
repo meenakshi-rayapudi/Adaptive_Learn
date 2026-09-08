@@ -1,0 +1,8 @@
+.env
+__pycache__/
+.venv
+how to install and where.txt
+chroma_db/
+Langchain.txt
+uploaded_docs/
+AGENTIC_ROADMAP.md

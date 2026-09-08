@@ -1,0 +1,12 @@
+python-dotenv
+langchain-groq
+markitdown[all]
+langchain
+langchain-community
+langchain-text-splitters
+chromadb
+sentence-transformers
+langchain-huggingface
+streamlit
+edge-tts               
+youtube-transcript-api>=1.2.4
