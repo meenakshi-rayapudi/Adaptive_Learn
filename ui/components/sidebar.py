@@ -1,11 +1,56 @@
 import streamlit as st
 import os
+import uuid
 from core.engine import process_document, create_tutor_agent
 from tools.parser import text_to_md
 from core.provider import get_llm
 from tools.youtube_tool import get_youtube_transcript
+from database.crud import list_students, get_or_create_student
+from ui.session_state import set_active_student, set_active_document, get_active_student_id, reset_document_artifacts
+from ui.components.topic_badges import render_topic_badges
 
 UPLOAD_FOLDER = "uploaded_docs"
+
+
+def _student_selector():
+    """Renders the student profile picker. Every quiz/flashcard event is attributed to this student_id."""
+    students = list_students()
+    choices = ["__new__"] + [s["id"] for s in students]
+    labels = {s["id"]: s for s in students}
+
+    def label(student_id):
+        if student_id == "__new__":
+            return "➕ New Student"
+        s = labels.get(student_id)
+        if not s:
+            return student_id
+        return f"{s['name']}" + (f"  ·  {s['archetype']}" if s.get("archetype") else "")
+
+    current = st.session_state.get("student_id")
+    default_index = choices.index(current) if current in choices else 0
+
+    selected = st.selectbox(
+        "👤 Student Profile",
+        choices,
+        index=default_index,
+        format_func=label,
+        key="student_selector",
+    )
+
+    if selected == "__new__":
+        new_name = st.text_input("New student name", key="new_student_name", placeholder="e.g. Alex")
+        if st.button("Create Student", use_container_width=True):
+            if new_name.strip():
+                new_id = "U" + uuid.uuid4().hex[:8].upper()
+                student = get_or_create_student(new_id, name=new_name.strip())
+                set_active_student(student["id"])
+                st.rerun()
+            else:
+                st.warning("Enter a name first.")
+    elif selected != current:
+        set_active_student(selected)
+        st.rerun()
+
 
 def show_sidebar():
     with st.sidebar:
@@ -16,6 +61,9 @@ def show_sidebar():
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
+
+        st.divider()
+        _student_selector()
 
         # ----------------------------
         # Study Plan Quick Access
@@ -40,7 +88,17 @@ def show_sidebar():
                 st.rerun()
 
         st.divider()
+
+        if st.session_state.get("topics"):
+            render_topic_badges(st.session_state.topics, st.session_state.topic_chunk_counts)
+            st.divider()
+
         st.subheader("📁 Ingest Knowledge")
+
+        if not get_active_student_id():
+            st.info("Select or create a student profile above before uploading material.")
+            return st.session_state.get("current_file")
+
         input_method = st.radio("Select Input Source", ["PDF Document", "YouTube Lecture URL"])
 
         uploaded_file = None
@@ -66,13 +124,15 @@ def show_sidebar():
                 with open(file_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
 
-                with st.spinner("Agent is ingesting, indexing, and analyzing document..."):
+                with st.spinner("Agent is ingesting, indexing, extracting topics, and analyzing document..."):
                     try:
                         llm = get_llm()
                         full_text = text_to_md(llm, file_path)
                         st.session_state.full_text = full_text
 
-                        vector_db = process_document(file_path)
+                        ingestion = process_document(file_path, student_id=get_active_student_id())
+                        vector_db = ingestion["vector_db"]
+
                         agent_executor = create_tutor_agent(
                             vector_db=vector_db,
                             full_text=full_text,
@@ -87,13 +147,12 @@ def show_sidebar():
                         st.session_state.vector_db = vector_db
                         st.session_state.agent_executor = agent_executor
                         st.session_state.current_file = uploaded_file.name
+                        set_active_document(ingestion["document_id"], ingestion["topics"], ingestion["topic_chunk_counts"])
                         st.session_state.messages = [{
                             "role": "assistant",
-                            "content": f"Hello! I have thoroughly ingested and indexed **{uploaded_file.name}**. I've prepared a customized 3-Day Study Mastery Plan for you. Feel free to ask questions, or ask me to generate flashcards, practice quizzes, audio summaries, or explain complex concepts!"
+                            "content": f"Hello! I have thoroughly ingested and indexed **{uploaded_file.name}**. I found {len(ingestion['topics'])} core topics and prepared a customized 3-Day Study Mastery Plan for you. Feel free to ask questions, or ask me to generate flashcards, practice quizzes, audio summaries, or explain complex concepts!"
                         }]
-                        st.session_state.flashcards = None
-                        st.session_state.quiz = None
-                        st.session_state.remedial_guide = None
+                        reset_document_artifacts()
 
                         st.success(f"Ready to study: {uploaded_file.name}")
                         st.rerun()
@@ -125,7 +184,9 @@ def show_sidebar():
                         full_text = text_to_md(llm, file_path)
                         st.session_state.full_text = full_text
 
-                        vector_db = process_document(file_path)
+                        ingestion = process_document(file_path, student_id=get_active_student_id())
+                        vector_db = ingestion["vector_db"]
+
                         agent_executor = create_tutor_agent(
                             vector_db=vector_db,
                             full_text=full_text,
@@ -140,13 +201,12 @@ def show_sidebar():
                         st.session_state.vector_db = vector_db
                         st.session_state.agent_executor = agent_executor
                         st.session_state.current_file = youtube_url
+                        set_active_document(ingestion["document_id"], ingestion["topics"], ingestion["topic_chunk_counts"])
                         st.session_state.messages = [{
                             "role": "assistant",
-                            "content": f"Hello! I have transcribed and indexed the YouTube lecture. I've prepared a 3-Day Study Mastery Plan. What concept would you like to explore first?"
+                            "content": f"Hello! I have transcribed and indexed the YouTube lecture, and found {len(ingestion['topics'])} core topics. I've prepared a 3-Day Study Mastery Plan. What concept would you like to explore first?"
                         }]
-                        st.session_state.flashcards = None
-                        st.session_state.quiz = None
-                        st.session_state.remedial_guide = None
+                        reset_document_artifacts()
 
                         st.success("YouTube lecture processed and ready!")
                         st.rerun()
@@ -154,4 +214,4 @@ def show_sidebar():
                 except Exception as e:
                     st.error(f"Error processing YouTube video: {e}")
 
-        return st.session_state.get("current_file")
+        return st.session_state.get("current_file")

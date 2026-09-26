@@ -15,9 +15,14 @@ def get_embedding_model():
     return _embedding_model
 
 
-def store_chunks(chunks, document_name="default"):
+def store_chunks(chunks, document_name="default", metadatas=None):
     """
     Stores document chunks into persistent local ChromaDB.
+
+    `metadatas`, when provided, must be a list parallel to `chunks` (e.g.
+    [{"topic_id": "T1", "chunk_index": 0}, ...]) so that topic-tagged
+    retrieval and analytics can filter/join on `topic_id` later without
+    re-embedding anything.
     """
     if not chunks:
         print("Warning: No chunks found to store in the vector database.")
@@ -27,12 +32,16 @@ def store_chunks(chunks, document_name="default"):
 
     clean_name = "".join(c for c in document_name if c.isalnum() or c in (" ", "_")).rstrip()
     persist_dir = os.path.join("chroma_db", clean_name.replace(" ", "_"))
-    
+
     embedding = get_embedding_model()
-    
+
+    if metadatas is not None and len(metadatas) != len(chunks):
+        raise ValueError("metadatas must be the same length as chunks")
+
     db = Chroma.from_texts(
         texts=chunks,
         embedding=embedding,
+        metadatas=metadatas,
         persist_directory=persist_dir
     )
 

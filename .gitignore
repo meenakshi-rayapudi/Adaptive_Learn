@@ -6,3 +6,4 @@ chroma_db/
 Langchain.txt
 uploaded_docs/
 AGENTIC_ROADMAP.md
+*.db

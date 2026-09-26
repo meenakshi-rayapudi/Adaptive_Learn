@@ -1,4 +1,5 @@
 python-dotenv
+sqlalchemy
 langchain-groq
 markitdown[all]
 langchain

@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 
 from core.provider import get_llm
 from core.vector_store import store_chunks
+from core.topic_extractor import extract_and_tag_document
 from prompts.system_prompt import TUTOR_SYSTEM_PROMPT
 from tools.parser import text_to_md
 from tools.chunker import chunk_text
@@ -192,16 +193,53 @@ class TutorAgent:
         }
 
 
-def process_document(file_path: str):
+def _make_document_id(file_path: str) -> str:
+    """Deterministic short id so re-ingesting the same path updates, not duplicates, its topics."""
+    import hashlib
+    return "D" + hashlib.md5(file_path.encode("utf-8")).hexdigest()[:10]
+
+
+def process_document(file_path: str, student_id: Optional[str] = None) -> Dict[str, Any]:
     """
-    Ingests and parses a document file, chunking it into a Chroma vector store.
+    Ingests and parses a document file: extracts a canonical topic taxonomy
+    (1 LLM call), tags every chunk with its nearest topic via local cosine
+    similarity, stores the chunks + topic_id metadata in ChromaDB, and
+    persists the document/topic rows to SQLite.
     """
     llm = get_llm()
     raw_markdown = text_to_md(llm, file_path)
     chunks = chunk_text(raw_markdown)
     doc_name = os.path.basename(file_path)
-    vector_db = store_chunks(chunks, doc_name)
-    return vector_db
+    document_id = _make_document_id(file_path)
+
+    extraction = extract_and_tag_document(raw_markdown, chunks, llm=llm)
+    topics = extraction["topics"]
+    tagged_chunks = extraction["tagged_chunks"]
+    topic_chunk_counts = extraction["topic_chunk_counts"]
+
+    metadatas = [
+        {"topic_id": tc["topic_id"] or "", "chunk_index": i}
+        for i, tc in enumerate(tagged_chunks)
+    ]
+    vector_db = store_chunks(chunks, doc_name, metadatas=metadatas)
+
+    try:
+        from database.db import init_db
+        from database.crud import create_document, replace_topics
+        init_db()
+        create_document(document_id, doc_name, source_type="pdf", uploaded_by=student_id)
+        if topics:
+            replace_topics(document_id, topics)
+    except Exception as e:
+        print(f"Warning: could not persist document/topics to SQLite: {e}")
+
+    return {
+        "vector_db": vector_db,
+        "document_id": document_id,
+        "topics": topics,
+        "topic_chunk_counts": topic_chunk_counts,
+        "chunk_count": len(chunks),
+    }
 
 
 def create_tutor_agent(vector_db=None, full_text: str = "", doc_name: str = "Document") -> TutorAgent:
