@@ -30,7 +30,7 @@ class Base(DeclarativeBase):
 
 
 def _utcnow() -> dt.datetime:
-    return dt.datetime.utcnow()
+    return dt.datetime.now(dt.timezone.utc)
 
 
 class Student(Base):

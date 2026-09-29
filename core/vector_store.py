@@ -15,14 +15,17 @@ def get_embedding_model():
     return _embedding_model
 
 
-def store_chunks(chunks, document_name="default", metadatas=None):
+def store_chunks(chunks, document_name="default", metadatas=None, ids=None):
     """
     Stores document chunks into persistent local ChromaDB.
 
     `metadatas`, when provided, must be a list parallel to `chunks` (e.g.
-    [{"topic_id": "T1", "chunk_index": 0}, ...]) so that topic-tagged
-    retrieval and analytics can filter/join on `topic_id` later without
-    re-embedding anything.
+    [{"topic_id": "D0001_T1", "topic_key": "T1", "chunk_index": 0}, ...])
+    so that topic-tagged retrieval and analytics can filter/join on `topic_id`
+    later without re-embedding anything.
+
+    `ids`, when provided, assigns deterministic IDs to Chroma documents
+    (e.g. ["D0001_c0", "D0001_c1", ...]) matching SQLite chunk rows.
     """
     if not chunks:
         print("Warning: No chunks found to store in the vector database.")
@@ -37,12 +40,18 @@ def store_chunks(chunks, document_name="default", metadatas=None):
 
     if metadatas is not None and len(metadatas) != len(chunks):
         raise ValueError("metadatas must be the same length as chunks")
+    if ids is not None and len(ids) != len(chunks):
+        raise ValueError("ids must be the same length as chunks")
 
-    db = Chroma.from_texts(
-        texts=chunks,
-        embedding=embedding,
-        metadatas=metadatas,
-        persist_directory=persist_dir
-    )
+    kwargs = {
+        "texts": chunks,
+        "embedding": embedding,
+        "metadatas": metadatas,
+        "persist_directory": persist_dir,
+    }
+    if ids is not None:
+        kwargs["ids"] = ids
+
+    db = Chroma.from_texts(**kwargs)
 
     return db

@@ -15,7 +15,11 @@ def get_engine():
     global _engine
     if _engine is None:
         os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
-        _engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
+        _engine = create_engine(
+            f"sqlite:///{DB_PATH}",
+            echo=False,
+            connect_args={"check_same_thread": False},
+        )
     return _engine
 
 

@@ -125,7 +125,7 @@ def generate_students(num_students: int, seed: int):
 
 def simulate_student(student: dict, num_days: int, rng: random.Random, session):
     archetype_cfg = ARCHETYPES[student["archetype"]]
-    start_date = dt.datetime.utcnow() - dt.timedelta(days=num_days)
+    start_date = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=num_days)
 
     # Per-(topic) SM-2 state, evolved across the simulated month.
     card_state = {t["topic_id"]: {"ef": 2.5, "interval": 0, "reps": 0} for t in SYNTHETIC_TOPICS}
