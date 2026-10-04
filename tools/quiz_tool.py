@@ -3,7 +3,7 @@ from typing import List, Dict, Any
 from core.provider import get_llm
 from tools.parser import safe_json_parse, extract_json_from_text
 
-def generate_quiz(text: str, topic: str = "General", num_questions: int = 5) -> List[Dict[str, Any]]:
+def generate_quiz(text: str, topic: str = "General", num_questions: int = 5, topic_id: str = None) -> List[Dict[str, Any]]:
     """
     Generates structured quiz questions (MCQ and True/False) with explanations from educational text.
     """
@@ -11,6 +11,7 @@ def generate_quiz(text: str, topic: str = "General", num_questions: int = 5) -> 
         return []
 
     llm = get_llm()
+    topic_id = topic_id or topic
 
     prompt = f"""
 You are an expert AI Assessment Designer and Academic Tutor.
@@ -70,7 +71,9 @@ TEXT CONTENT:
                     "type": q_type,
                     "options": [str(opt).strip() for opt in options],
                     "answer": str(q["answer"]).strip(),
-                    "explanation": str(q.get("explanation", "Correct answer based on the study text.")).strip()
+                    "explanation": str(q.get("explanation", "Correct answer based on the study text.")).strip(),
+                    "topic_id": topic_id,
+                    "topic": topic,
                 })
         return validated_quiz
     except Exception as e:

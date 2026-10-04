@@ -9,7 +9,7 @@ from .schema import (
     FlashcardEvent,
     Recommendation,
 )
-from .db import get_engine, get_session, init_db
+from .db import get_engine, get_session, init_db, log_quiz_attempt, log_question_event, log_flashcard_review
 from .crud import (
     get_or_create_student,
     list_students,
@@ -34,6 +34,9 @@ __all__ = [
     "get_engine",
     "get_session",
     "init_db",
+    "log_quiz_attempt",
+    "log_question_event",
+    "log_flashcard_review",
     "get_or_create_student",
     "list_students",
     "create_document",

@@ -73,5 +73,10 @@ class TestSchemasAndParsing(unittest.TestCase):
         self.assertIsNone(store.flashcards)
         self.assertIsNone(store.study_plan)
 
+    def test_fallback_tool_intent_for_flashcards(self):
+        agent = TutorAgent.__new__(TutorAgent)
+        self.assertEqual(agent._fallback_tool_for_query("build flashcards on photosynthesis"), "flashcard_creator")
+        self.assertEqual(agent._fallback_tool_for_query("create a practice quiz"), "quiz_creator")
+
 if __name__ == "__main__":
     unittest.main()

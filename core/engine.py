@@ -137,6 +137,21 @@ class TutorAgent:
             audio_narrator
         ]
 
+    def _fallback_tool_for_query(self, query: str) -> Optional[str]:
+        """Heuristic fallback when the model answers in prose instead of calling a tool."""
+        normalized = (query or "").lower()
+        if any(term in normalized for term in ["flashcard", "flashcards", "card deck", "study cards"]):
+            return "flashcard_creator"
+        if any(term in normalized for term in ["quiz", "assessment", "practice test", "mcq", "true/false"]):
+            return "quiz_creator"
+        if any(term in normalized for term in ["study plan", "3-day", "mastery plan", "roadmap"]):
+            return "study_planner"
+        if any(term in normalized for term in ["audio", "narrate", "read aloud", "tts", "voice"]):
+            return "audio_narrator"
+        if any(term in normalized for term in ["remedial", "missed question", "diagnose", "why was i wrong"]):
+            return "adaptive_remedial_evaluator"
+        return None
+
     def run(self, query: str, chat_history: Optional[List[tuple]] = None) -> Dict[str, Any]:
         """
         Executes an autonomous ReAct tool-calling reasoning loop.
@@ -162,6 +177,27 @@ class TutorAgent:
             messages.append(ai_msg)
 
             if not hasattr(ai_msg, "tool_calls") or not ai_msg.tool_calls:
+                fallback_tool = self._fallback_tool_for_query(query)
+                if fallback_tool and fallback_tool in tools_by_name:
+                    selected_tool = tools_by_name[fallback_tool]
+                    tool_args = {}
+                    if fallback_tool == "flashcard_creator":
+                        tool_args = {"topic": "General", "num_cards": 10}
+                    elif fallback_tool == "quiz_creator":
+                        tool_args = {"topic": "General", "num_questions": 5}
+                    elif fallback_tool == "study_planner":
+                        tool_args = {"topic": "General"}
+                    elif fallback_tool == "audio_narrator":
+                        tool_args = {"text": query, "filename_prefix": "summary"}
+                    elif fallback_tool == "adaptive_remedial_evaluator":
+                        tool_args = {"missed_questions_summary": query, "topic": "General"}
+
+                    try:
+                        tool_output = selected_tool.invoke(tool_args)
+                    except Exception as e:
+                        tool_output = f"Error executing {fallback_tool}: {str(e)}"
+                    messages.append(ToolMessage(content=str(tool_output), tool_call_id=fallback_tool, name=fallback_tool))
+                    break
                 break
 
             for tool_call in ai_msg.tool_calls:

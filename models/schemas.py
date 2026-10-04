@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 class FlashcardItem(BaseModel):
     front: str = Field(description="The question, key term, or concept on the front of the flashcard")
     back: str = Field(description="The explanation, definition, or answer on the back of the flashcard")
-    topic: Optional[str] = Field(default="General", description="Topic or sub-domain of the flashcard")
+    topic_id: Optional[str] = Field(default=None, description="Canonical topic id for the flashcard, e.g. D0001_T1")
+    topic: Optional[str] = Field(default=None, description="Optional legacy topic label for display and compatibility")
     difficulty: Optional[Literal["easy", "medium", "hard"]] = Field(default="medium", description="Estimated difficulty level")
 
 
@@ -20,6 +21,7 @@ class QuizQuestionItem(BaseModel):
     options: List[str] = Field(default_factory=list, description="4 distinct options for MCQ; empty or ['True', 'False'] for true/false")
     answer: str = Field(description="The exact correct option string")
     explanation: Optional[str] = Field(default="", description="Educational explanation for why the answer is correct")
+    topic_id: Optional[str] = Field(default=None, description="Canonical topic id for the quiz question, e.g. D0001_T1")
 
 
 class QuizDeck(BaseModel):

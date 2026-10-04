@@ -4,7 +4,7 @@ from core.provider import get_llm
 from tools.parser import safe_json_parse, extract_json_from_text
 from langchain_core.tools import tool
 
-def generate_flashcards(text: str, topic: str = "General", num_cards: int = 10) -> List[Dict[str, Any]]:
+def generate_flashcards(text: str, topic: str = "General", num_cards: int = 10, topic_id: str = None) -> List[Dict[str, Any]]:
     """
     Generates structured flashcards from educational text for a given topic.
     """
@@ -12,6 +12,7 @@ def generate_flashcards(text: str, topic: str = "General", num_cards: int = 10) 
         return []
 
     llm = get_llm()
+    topic_id = topic_id or topic
 
     prompt = f"""
 You are an expert AI Academic Tutor that creates active-recall study flashcards.
@@ -52,6 +53,7 @@ TEXT CONTENT:
                     "front": str(c["front"]).strip(),
                     "back": str(c["back"]).strip(),
                     "topic": c.get("topic", topic),
+                    "topic_id": c.get("topic_id") or topic_id,
                     "difficulty": c.get("difficulty", "medium"),
                     "status": "new",
                     "review_count": 0,
