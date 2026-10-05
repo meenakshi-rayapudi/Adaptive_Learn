@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 
 from database.db import get_session
 from database.schema import Topic, EngagementEvent, QuizAttempt, QuizQuestion
-from engine.feature_spec import recency_penalty
+from engine.cold_start import cold_start_score
 from engine.features import compute_topic_vectors
 
 # A new "study session" starts after this many idle minutes.
@@ -51,16 +51,14 @@ def get_topic(topic_id: str, document_id: Optional[str] = None, session=None) ->
 
 def _deficit(fv) -> float:
     """
-    Day-1 weakness score from docs/architectural_decisions.md (Decision 3):
-        0.5 * (1 - accuracy) + 0.3 * recency penalty + 0.2 * (1 - flashcard mastery)
-    A missing value counts against the topic: never studied = fully stale,
-    no flashcards = no mastery, never quizzed = 50/50 on accuracy.
+    Day-1 weakness score, using the cold-start formula in engine/cold_start.py.
+    A missing value counts against the topic: never studied = fully stale (handled
+    by cold_start_score), no flashcards = no mastery, never quizzed = 50/50 on accuracy.
     Week 4 swaps this for the trained model once a student has 3+ attempts.
     """
     accuracy = fv.a if fv.a is not None else 0.5
-    recency = recency_penalty(fv.r) if fv.r is not None else 1.0
     mastery = fv.f if fv.f is not None else 0.0
-    return 0.5 * (1 - accuracy) + 0.3 * recency + 0.2 * (1 - mastery)
+    return cold_start_score(accuracy, fv.r, mastery)
 
 
 def get_weak_topics(student_id: str, document_id: str, limit: int = 3, session=None) -> List[Dict]:
@@ -93,18 +91,23 @@ def get_weak_topics(student_id: str, document_id: str, limit: int = 3, session=N
 
 def _tag_questions(quiz: List[Dict], document_id: Optional[str], topics: Optional[List[Dict]]) -> List[Optional[str]]:
     """
-    Full topic id for every question. Drill quizzes already carry one; for the rest we pick the
-    closest topic by text similarity (same local matching used for document chunks, no LLM call).
+    Full topic id for every question. Drill quizzes already carry a real one. generate_quiz stamps a
+    placeholder like "General" when it isn't given a topic, so only ids that belong to this document
+    count as real; the rest get the closest topic by text similarity (same local matching used for
+    document chunks, no LLM call).
     """
-    topic_ids = [q.get("topic_id") for q in quiz]
+    prefix = f"{document_id}_" if document_id else None
+    topic_ids = [q.get("topic_id") if prefix and str(q.get("topic_id") or "").startswith(prefix) else None
+                 for q in quiz]
     missing = [i for i, t in enumerate(topic_ids) if not t]
 
     if missing and topics and document_id:
         from core.topic_extractor import assign_topics_to_chunks
         texts = [f"{quiz[i].get('question', '')} {quiz[i].get('answer', '')}" for i in missing]
         for i, tagged in zip(missing, assign_topics_to_chunks(texts, topics)):
-            if tagged["topic_id"]:
-                topic_ids[i] = f"{document_id}_{tagged['topic_id']}"
+            tid = tagged["topic_id"]
+            if tid:
+                topic_ids[i] = tid if tid.startswith(prefix) else f"{prefix}{tid}"  # topics may carry short or full ids
     return topic_ids
 
 

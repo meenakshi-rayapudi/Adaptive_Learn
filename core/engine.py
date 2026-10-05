@@ -95,13 +95,11 @@ class TutorAgent:
             return f"Topic '{topic_id}' was not found in this document."
 
         query = f"{topic['name']}: {topic['description']}"
-        context = search_topic(topic["key"], query, self.vector_db) or self._get_context(topic["name"])
-        quiz = generate_quiz(context, topic=topic["name"], num_questions=5, difficulty=difficulty)
+        context = search_topic(topic["id"], query, self.vector_db) or self._get_context(topic["name"])
+        quiz = generate_quiz(context, topic=topic["name"], num_questions=5, topic_id=topic["id"], difficulty=difficulty)
         if not quiz:
             return f"Could not generate a quiz for '{topic['name']}' from the available context."
 
-        for question in quiz:
-            question["topic_id"] = topic["id"]
         self.artifacts.quiz = quiz
         return f"Successfully created a {len(quiz)}-question {difficulty} quiz on the topic '{topic['name']}'. The quiz is ready."
 
@@ -180,6 +178,21 @@ class TutorAgent:
             audio_narrator
         ]
 
+    def _fallback_tool_for_query(self, query: str) -> Optional[str]:
+        """Heuristic fallback when the model answers in prose instead of calling a tool."""
+        normalized = (query or "").lower()
+        if any(term in normalized for term in ["flashcard", "flashcards", "card deck", "study cards"]):
+            return "flashcard_creator"
+        if any(term in normalized for term in ["quiz", "assessment", "practice test", "mcq", "true/false"]):
+            return "quiz_creator"
+        if any(term in normalized for term in ["study plan", "3-day", "mastery plan", "roadmap"]):
+            return "study_planner"
+        if any(term in normalized for term in ["audio", "narrate", "read aloud", "tts", "voice"]):
+            return "audio_narrator"
+        if any(term in normalized for term in ["remedial", "missed question", "diagnose", "why was i wrong"]):
+            return "adaptive_remedial_evaluator"
+        return None
+
     def run(self, query: str, chat_history: Optional[List[tuple]] = None) -> Dict[str, Any]:
         """
         Executes an autonomous ReAct tool-calling reasoning loop.
@@ -218,6 +231,27 @@ class TutorAgent:
             messages.append(ai_msg)
 
             if not hasattr(ai_msg, "tool_calls") or not ai_msg.tool_calls:
+                fallback_tool = self._fallback_tool_for_query(query)
+                if fallback_tool and fallback_tool in tools_by_name:
+                    selected_tool = tools_by_name[fallback_tool]
+                    tool_args = {}
+                    if fallback_tool == "flashcard_creator":
+                        tool_args = {"topic": "General", "num_cards": 10}
+                    elif fallback_tool == "quiz_creator":
+                        tool_args = {"topic": "General", "num_questions": 5}
+                    elif fallback_tool == "study_planner":
+                        tool_args = {"topic": "General"}
+                    elif fallback_tool == "audio_narrator":
+                        tool_args = {"text": query, "filename_prefix": "summary"}
+                    elif fallback_tool == "adaptive_remedial_evaluator":
+                        tool_args = {"missed_questions_summary": query, "topic": "General"}
+
+                    try:
+                        tool_output = selected_tool.invoke(tool_args)
+                    except Exception as e:
+                        tool_output = f"Error executing {fallback_tool}: {str(e)}"
+                    messages.append(ToolMessage(content=str(tool_output), tool_call_id=fallback_tool, name=fallback_tool))
+                    break
                 break
 
             for tool_call in ai_msg.tool_calls:
@@ -260,7 +294,7 @@ def process_document(file_path: str, student_id: Optional[str] = None) -> Dict[s
     Ingests and parses a document file: extracts a canonical topic taxonomy
     (1 LLM call), tags every chunk with its nearest topic via local cosine
     similarity, stores the chunks + topic_id metadata in ChromaDB, and
-    persists the document/topic rows to SQLite.
+    persists the document, topic, and chunk rows to SQLite.
     """
     llm = get_llm()
     raw_markdown = text_to_md(llm, file_path)
@@ -269,30 +303,71 @@ def process_document(file_path: str, student_id: Optional[str] = None) -> Dict[s
     document_id = _make_document_id(file_path)
 
     extraction = extract_and_tag_document(raw_markdown, chunks, llm=llm)
-    topics = extraction["topics"]
+    raw_topics = extraction["topics"]
     tagged_chunks = extraction["tagged_chunks"]
-    topic_chunk_counts = extraction["topic_chunk_counts"]
 
-    metadatas = [
-        {"topic_id": tc["topic_id"] or "", "chunk_index": i}
-        for i, tc in enumerate(tagged_chunks)
-    ]
-    vector_db = store_chunks(chunks, doc_name, metadatas=metadatas)
-
+    # 1. Initialize SQLite and persist Document + Topics first so foreign keys exist
+    saved_topics = []
     try:
         from database.db import init_db
-        from database.crud import create_document, replace_topics
+        from database.crud import create_document, replace_topics, replace_chunks
         init_db()
         create_document(document_id, doc_name, source_type="pdf", uploaded_by=student_id)
-        if topics:
-            replace_topics(document_id, topics)
+        if raw_topics:
+            saved_topics = replace_topics(document_id, raw_topics)
     except Exception as e:
         print(f"Warning: could not persist document/topics to SQLite: {e}")
+
+    # 2. Build aligned metadata, chunk rows, and dual-keyed chunk counts
+    # Aligns topic_id format:
+    # - full_topic_id (e.g. "D1234567890_T1") matches Topic.id primary key in SQLite & FK in Chunk
+    # - topic_key (e.g. "T1") provides the short sequential label for prompts and UI badges
+    # - chroma_id (e.g. "D1234567890_c0") deterministically links Chroma vectors to SQLite chunks
+    metadatas = []
+    chunks_data = []
+    ids = []
+    topic_chunk_counts = {}
+
+    for i, tc in enumerate(tagged_chunks):
+        short_key = tc.get("topic_id")
+        full_topic_id = f"{document_id}_{short_key}" if short_key else None
+        chroma_id = f"{document_id}_c{i}"
+        ids.append(chroma_id)
+
+        metadatas.append({
+            "document_id": document_id,
+            "topic_id": full_topic_id or "",
+            "topic_key": short_key or "",
+            "chunk_index": i,
+        })
+
+        chunks_data.append({
+            "chunk_index": i,
+            "topic_id": full_topic_id,
+            "chroma_id": chroma_id,
+            "text_preview": tc.get("chunk", "")[:300],
+            "similarity": tc.get("similarity"),
+        })
+
+        if short_key:
+            topic_chunk_counts[short_key] = topic_chunk_counts.get(short_key, 0) + 1
+            if full_topic_id:
+                topic_chunk_counts[full_topic_id] = topic_chunk_counts.get(full_topic_id, 0) + 1
+
+    # 3. Persist chunk records to SQLite
+    try:
+        from database.crud import replace_chunks
+        replace_chunks(document_id, chunks_data)
+    except Exception as e:
+        print(f"Warning: could not persist chunks to SQLite: {e}")
+
+    # 4. Persist chunks to ChromaDB with deterministic IDs and aligned topic_id metadata
+    vector_db = store_chunks(chunks, doc_name, metadatas=metadatas, ids=ids)
 
     return {
         "vector_db": vector_db,
         "document_id": document_id,
-        "topics": topics,
+        "topics": saved_topics if saved_topics else raw_topics,
         "topic_chunk_counts": topic_chunk_counts,
         "chunk_count": len(chunks),
     }

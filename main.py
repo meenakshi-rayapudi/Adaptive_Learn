@@ -37,8 +37,9 @@ Cellular respiration is the reciprocal metabolic pathway where organisms break d
     if ingestion["topics"]:
         print(f"\n🗂️ Extracted {len(ingestion['topics'])} topics:")
         for t in ingestion["topics"]:
-            count = ingestion["topic_chunk_counts"].get(t["topic_id"], 0)
-            print(f"  [{t['topic_id']}] {t['name']} ({count} chunks)")
+            key = t.get("topic_key") or t.get("topic_id")
+            count = ingestion["topic_chunk_counts"].get(t.get("id"), ingestion["topic_chunk_counts"].get(key, 0))
+            print(f"  [{key}] {t['name']} ({count} chunks)")
 
     print("🧠 Deploying Autonomous AI Tutor Agent...")
     agent = create_tutor_agent(vector_db=vector_db, full_text=full_text, doc_name=os.path.basename(doc_path))

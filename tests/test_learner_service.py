@@ -148,6 +148,27 @@ class TestWithDatabase(unittest.TestCase):
         row = self.session.query(QuizQuestion).filter_by(quiz_attempt_id=attempt_id).one()
         self.assertEqual(row.topic_id, "D1_T2")
 
+    def tag_with_fake_matcher(self, quiz, topics, matcher_topic_id):
+        import core.topic_extractor as te
+        original = te.assign_topics_to_chunks
+        te.assign_topics_to_chunks = lambda texts, tps: [{"chunk": t, "topic_id": matcher_topic_id, "similarity": 0.9} for t in texts]
+        try:
+            attempt_id = svc.log_quiz_attempt("stu", "D1", quiz, {0: "a"}, topics=topics, session=self.session)
+        finally:
+            te.assign_topics_to_chunks = original
+        return self.session.query(QuizQuestion).filter_by(quiz_attempt_id=attempt_id).one().topic_id
+
+    def test_placeholder_topic_ids_are_replaced_with_a_real_topic(self):
+        # generate_quiz stamps the topic *name* (or "General") when it isn't given a topic id
+        quiz = [{"question": "q", "type": "mcq", "options": ["a"], "answer": "a", "topic_id": "General"}]
+        saved = self.tag_with_fake_matcher(quiz, [{"topic_id": "T2", "name": "Deadlocks", "description": ""}], "T2")
+        self.assertEqual(saved, "D1_T2")
+
+    def test_topics_that_already_carry_full_ids_are_not_prefixed_twice(self):
+        quiz = [{"question": "q", "type": "mcq", "options": ["a"], "answer": "a"}]
+        saved = self.tag_with_fake_matcher(quiz, [{"topic_id": "D1_T2", "name": "Deadlocks", "description": ""}], "D1_T2")
+        self.assertEqual(saved, "D1_T2")
+
     def test_nothing_is_saved_without_a_student_or_questions(self):
         self.assertIsNone(svc.log_quiz_attempt(None, "D1", self.drill_quiz(), {}, session=self.session))
         self.assertIsNone(svc.log_quiz_attempt("stu", "D1", [], {}, session=self.session))
@@ -183,7 +204,7 @@ class TestTargetedQuizPieces(unittest.TestCase):
     def test_unknown_difficulty_falls_back_to_medium(self):
         self.assertIn("Difficulty: medium", self.run_quiz("impossible"))
 
-    def test_topic_search_filters_on_the_topic_key(self):
+    def test_topic_search_filters_on_the_full_topic_id(self):
         class FakeStore:
             def similarity_search(self, query, k, filter):
                 self.seen = filter
@@ -193,11 +214,11 @@ class TestTargetedQuizPieces(unittest.TestCase):
                 return [Doc()]
 
         store = FakeStore()
-        self.assertEqual(search_topic("T2", "deadlocks", store), "chunk text")
-        self.assertEqual(store.seen, {"topic_id": "T2"})
+        self.assertEqual(search_topic("D1_T2", "deadlocks", store), "chunk text")
+        self.assertEqual(store.seen, {"topic_id": "D1_T2"})
 
     def test_topic_search_without_a_store_is_empty(self):
-        self.assertEqual(search_topic("T2", "x", None), "")
+        self.assertEqual(search_topic("D1_T2", "x", None), "")
 
 
 if __name__ == "__main__":

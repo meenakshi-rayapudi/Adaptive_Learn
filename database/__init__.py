@@ -10,7 +10,17 @@ from .schema import (
     EngagementEvent,
     Recommendation,
 )
-from .db import get_engine, get_session, init_db
+from .db import get_engine, get_session, init_db, log_quiz_attempt, log_question_event, log_flashcard_review
+from .crud import (
+    get_or_create_student,
+    list_students,
+    create_document,
+    replace_topics,
+    get_topics_for_document,
+    replace_chunks,
+    get_chunks_for_document,
+    get_chunk_counts_by_topic,
+)
 
 __all__ = [
     "Base",
@@ -26,4 +36,15 @@ __all__ = [
     "get_engine",
     "get_session",
     "init_db",
+    "log_quiz_attempt",
+    "log_question_event",
+    "log_flashcard_review",
+    "get_or_create_student",
+    "list_students",
+    "create_document",
+    "replace_topics",
+    "get_topics_for_document",
+    "replace_chunks",
+    "get_chunks_for_document",
+    "get_chunk_counts_by_topic",
 ]

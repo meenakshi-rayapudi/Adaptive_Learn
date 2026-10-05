@@ -18,16 +18,16 @@ def search_document(query: str, vector_db):
     except Exception as e:
         return f"Error retrieving document content: {str(e)}"
 
-def search_topic(topic_key: str, query: str, vector_db) -> str:
+def search_topic(topic_id: str, query: str, vector_db) -> str:
     """
     Like search_document, but only looks at chunks tagged with one topic
-    (the topic_id saved in ChromaDB metadata at ingestion). Returns "" if
-    nothing is tagged with that topic.
+    (the full topic id, e.g. "D0001_T3", saved in ChromaDB metadata at
+    ingestion). Returns "" if nothing is tagged with that topic.
     """
     if vector_db is None:
         return ""
     try:
-        docs = vector_db.similarity_search(query, k=config.RETRIEVAL_K, filter={"topic_id": topic_key})
+        docs = vector_db.similarity_search(query, k=config.RETRIEVAL_K, filter={"topic_id": topic_id})
         return "\n\n--- CHUNK ---\n\n".join(doc.page_content for doc in docs)
     except Exception as e:
         print(f"Topic search failed: {e}")

@@ -5,10 +5,13 @@ import re
 # ✅ CLEAN TEXT FUNCTION
 def clean_text(text):
     # remove markdown symbols, borders, extra chars
-    text = re.sub(r'\|.*?\|', '', text)        # remove table rows
-    text = re.sub(r'[-_=]{2,}', '', text)      # remove lines like ----
-    text = re.sub(r'[#$*`]', '', text)         # remove symbols
-    text = re.sub(r'\s+', ' ', text)           # remove extra spaces
+    text = text or ""
+    text = text.replace("|", " ")
+    text = re.sub(r'\[.*?\]\(.*?\)', ' ', text)
+    text = re.sub(r'#{1,6}\s*', '', text)
+    text = re.sub(r'[-_=]{2,}', ' ', text)
+    text = re.sub(r'[*`_~]', '', text)
+    text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
 

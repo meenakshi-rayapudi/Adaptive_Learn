@@ -67,17 +67,24 @@ def safe_json_parse(text: str):
     Handles cases where the model adds extra text
     or markdown formatting.
     """
+    if text is None:
+        return []
+
+    candidate = str(text).strip()
+    candidate = re.sub(r"^`{1,3}\s*(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\s*`{1,3}\s*$", "", candidate)
+    candidate = candidate.strip()
 
     try:
-        return json.loads(text)
-
+        return json.loads(candidate)
     except json.JSONDecodeError:
-        cleaned = re.sub(r"```json|```", "", text).strip()
-
-        try:
-            return json.loads(cleaned)
-        except:
-            return []
+        match = re.search(r"(\[.*\]|\{.*\})", candidate, flags=re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except Exception:
+                pass
+        return []
 
 
 def extract_json_from_text(text: str):

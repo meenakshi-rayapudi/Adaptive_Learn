@@ -24,7 +24,11 @@ def render_topic_badges(topics: list, topic_chunk_counts: dict) -> None:
     badges_html = "<div style='display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;'>"
     for i, topic in enumerate(topics):
         color = BADGE_COLORS[i % len(BADGE_COLORS)]
-        count = topic_chunk_counts.get(topic["topic_id"], 0)
+        count = (
+            topic_chunk_counts.get(topic.get("id"))
+            if topic.get("id") in topic_chunk_counts
+            else topic_chunk_counts.get(topic.get("topic_id"), topic_chunk_counts.get(topic.get("topic_key"), 0))
+        )
         title = topic.get("description", "").replace('"', "'")
         badges_html += (
             f"<span title=\"{title}\" style='"
