@@ -144,6 +144,18 @@ class FlashcardEvent(Base):
     student: Mapped["Student"] = relationship(back_populates="flashcard_events")
 
 
+class EngagementEvent(Base):
+    """Source of feature E: remedial guides read, chat questions asked, etc., per topic."""
+    __tablename__ = "engagement_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id"))
+    document_id: Mapped[Optional[str]] = mapped_column(ForeignKey("documents.id"), nullable=True)
+    topic_id: Mapped[Optional[str]] = mapped_column(ForeignKey("topics.id"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(32))  # remedial_guide_read | chat_question | summary_read
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 class Recommendation(Base):
     __tablename__ = "recommendations"
 

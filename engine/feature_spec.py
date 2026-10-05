@@ -89,8 +89,8 @@ class FeatureVector:
     """Raw (untransformed) feature values for one (student_id, topic_id) pair."""
     student_id: str
     topic_id: str
-    q: float
-    a: float
+    q: Optional[float] = None   # None if the student has no quiz history at all
+    a: Optional[float] = None   # None if the student has never been quizzed on this topic
     t: Optional[float] = None   # milliseconds; None if the student has no quiz history for this topic
     r: Optional[float] = None   # days since last study event; None if never studied
     f: Optional[float] = None   # flashcard mastery ratio; None if never reviewed
@@ -105,8 +105,8 @@ class FeatureVector:
         """Model-ready values (transformed per the spec above), NaN for missing modalities."""
         nan = float("nan")
         return [
-            self.q,
-            self.a,
+            self.q if self.q is not None else nan,
+            self.a if self.a is not None else nan,
             log1p_transform(self.t) if self.t is not None else nan,
             recency_penalty(self.r) if self.r is not None else nan,
             self.f if self.f is not None else nan,

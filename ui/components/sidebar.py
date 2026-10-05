@@ -5,18 +5,25 @@ from core.engine import process_document, create_tutor_agent
 from tools.parser import text_to_md
 from core.provider import get_llm
 from tools.youtube_tool import get_youtube_transcript
+from core.learner_service import log_activity
 from database.crud import list_students, get_or_create_student
 from ui.session_state import set_active_student, set_active_document, get_active_student_id, reset_document_artifacts
 from ui.components.topic_badges import render_topic_badges
+from ui.components.session_timer import show_session_timer
 
 UPLOAD_FOLDER = "uploaded_docs"
 
 
 def _student_selector():
     """Renders the student profile picker. Every quiz/flashcard event is attributed to this student_id."""
-    students = list_students()
+    show_synthetic = st.session_state.get("show_synthetic_students", False)
+    students = list_students(include_synthetic=show_synthetic)
     choices = ["__new__"] + [s["id"] for s in students]
     labels = {s["id"]: s for s in students}
+
+    current = st.session_state.get("student_id")
+    if current and current not in choices:
+        set_active_student(None)
 
     def label(student_id):
         if student_id == "__new__":
@@ -40,16 +47,23 @@ def _student_selector():
     if selected == "__new__":
         new_name = st.text_input("New student name", key="new_student_name", placeholder="e.g. Alex")
         if st.button("Create Student", use_container_width=True):
-            if new_name.strip():
-                new_id = "U" + uuid.uuid4().hex[:8].upper()
-                student = get_or_create_student(new_id, name=new_name.strip())
-                set_active_student(student["id"])
+            clean_name = new_name.strip()
+            if clean_name:
+                existing = next((s for s in students if s["name"].lower() == clean_name.lower()), None)
+                if existing:
+                    set_active_student(existing["id"])
+                else:
+                    new_id = "U" + uuid.uuid4().hex[:8].upper()
+                    student = get_or_create_student(new_id, name=clean_name)
+                    set_active_student(student["id"])
                 st.rerun()
             else:
                 st.warning("Enter a name first.")
     elif selected != current:
         set_active_student(selected)
         st.rerun()
+
+    st.checkbox("🧪 Show synthetic test profiles", key="show_synthetic_students")
 
 
 def show_sidebar():
@@ -64,6 +78,8 @@ def show_sidebar():
 
         st.divider()
         _student_selector()
+        if get_active_student_id():
+            show_session_timer(get_active_student_id())
 
         # ----------------------------
         # Study Plan Quick Access
@@ -79,6 +95,7 @@ def show_sidebar():
                 use_container_width=True
             )
             if st.button("💬 View Plan in Chat", use_container_width=True):
+                log_activity(get_active_student_id(), "summary_read", st.session_state.get("document_id"))
                 if "messages" not in st.session_state:
                     st.session_state.messages = []
                 st.session_state.messages.append({
@@ -136,7 +153,9 @@ def show_sidebar():
                         agent_executor = create_tutor_agent(
                             vector_db=vector_db,
                             full_text=full_text,
-                            doc_name=uploaded_file.name
+                            doc_name=uploaded_file.name,
+                            student_id=get_active_student_id(),
+                            document_id=ingestion["document_id"]
                         )
 
                         # Agent autonomously builds initial study plan
@@ -190,7 +209,9 @@ def show_sidebar():
                         agent_executor = create_tutor_agent(
                             vector_db=vector_db,
                             full_text=full_text,
-                            doc_name=f"YouTube Lecture ({youtube_url})"
+                            doc_name=f"YouTube Lecture ({youtube_url})",
+                            student_id=get_active_student_id(),
+                            document_id=ingestion["document_id"]
                         )
 
                         # Agent autonomously builds initial study plan

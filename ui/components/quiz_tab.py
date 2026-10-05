@@ -1,5 +1,7 @@
 import datetime
 import streamlit as st
+from core.learner_service import log_quiz_attempt
+from ui.components.drill import show_weak_topic_drill, show_drill_banner
 from utils.analytics import save_quiz_result
 
 
@@ -8,6 +10,9 @@ def render_quiz_tab(send_agent_goal) -> None:
     shared agent-dispatch callback owned by ui/app.py."""
     st.subheader("Practice Assessment & Cognitive Remediation")
     st.caption("AI-generated assessments with automated error diagnosis and personalized remedial guides.")
+
+    show_weak_topic_drill()
+    st.divider()
 
     top_col1, top_col2 = st.columns([1, 1])
     with top_col1:
@@ -41,6 +46,8 @@ def render_quiz_tab(send_agent_goal) -> None:
 
     if "user_answers" not in st.session_state:
         st.session_state.user_answers = {}
+
+    show_drill_banner(st.session_state.quiz)
 
     if st.session_state.get("quiz_submitted"):
         _render_results(send_agent_goal)
@@ -93,6 +100,12 @@ def _render_active_quiz(send_agent_goal) -> None:
         st.session_state.last_total = total_q
         st.session_state.last_accuracy = accuracy
         st.session_state.quiz_submitted = True
+
+        # Save to the database so this quiz counts toward the student's weak topics
+        log_quiz_attempt(
+            st.session_state.get("student_id"), st.session_state.get("document_id"),
+            st.session_state.quiz, st.session_state.user_answers, topics=st.session_state.get("topics"),
+        )
 
         # Persist score to CSV analytics
         save_quiz_result(topic, score, total_q)

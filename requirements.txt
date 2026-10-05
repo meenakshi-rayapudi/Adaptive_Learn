@@ -1,5 +1,7 @@
 python-dotenv
 sqlalchemy
+pandas
+scikit-learn
 langchain-groq
 markitdown[all]
 langchain

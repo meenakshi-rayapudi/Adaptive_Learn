@@ -1,5 +1,6 @@
 import streamlit as st
 from core.engine import run_agent_query
+from core.learner_service import log_activity
 
 def chat_interface():
     if "messages" not in st.session_state:
@@ -18,6 +19,7 @@ def chat_interface():
     # React to user input
     if prompt := st.chat_input("Ask a question, request flashcards, a practice quiz, study plan, or audio..."):
         # Display user message in chat message container
+        log_activity(st.session_state.get("student_id"), "chat_question", st.session_state.get("document_id"))
         st.chat_message("user").markdown(prompt)
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})

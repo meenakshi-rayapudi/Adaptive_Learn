@@ -2,13 +2,14 @@ import os
 import json
 from typing import List, Dict, Any, Optional
 
+from core import config, learner_service
 from core.provider import get_llm
 from core.vector_store import store_chunks
 from core.topic_extractor import extract_and_tag_document
 from prompts.system_prompt import TUTOR_SYSTEM_PROMPT
 from tools.parser import text_to_md
 from tools.chunker import chunk_text
-from tools.retrieval_tool import search_document, create_retrieval_tool
+from tools.retrieval_tool import search_document, search_topic, create_retrieval_tool
 from tools.flashcard_tool import generate_flashcards
 from tools.quiz_tool import generate_quiz
 from tools.planner_tool import generate_study_plan
@@ -16,6 +17,11 @@ from tools.adaptive_tool import generate_remedial_guide
 from tools.audio_tool import create_audio_narration
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+
+
+def _clip(text: str, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[:limit] + " …[truncated]"
 
 
 class AgentArtifactStore:
@@ -51,10 +57,13 @@ class TutorAgent:
     Autonomous Educational Agent orchestrating RAG search, flashcards,
     quizzes, study plans, adaptive remediation, and audio synthesis.
     """
-    def __init__(self, vector_db=None, full_text: str = "", doc_name: str = "Document"):
+    def __init__(self, vector_db=None, full_text: str = "", doc_name: str = "Document",
+                 student_id: Optional[str] = None, document_id: Optional[str] = None):
         self.vector_db = vector_db
         self.full_text = full_text
         self.doc_name = doc_name
+        self.student_id = student_id
+        self.document_id = document_id
         self.artifacts = AgentArtifactStore()
         self.llm = get_llm()
         self.tools = self._build_tools()
@@ -67,6 +76,34 @@ class TutorAgent:
             if retrieved and not retrieved.startswith("No relevant"):
                 return retrieved
         return self.full_text if self.full_text else query
+
+    def make_targeted_quiz(self, topic_id: str = "", difficulty: str = "medium") -> str:
+        """
+        Builds a 5-question quiz on one topic and stores it in self.artifacts.quiz.
+        An empty topic_id means "this student's weakest topic". Used by the
+        quiz_creator_targeted tool and by the UI's "Review Weak Topic" button.
+        """
+        if not topic_id and self.student_id and self.document_id:
+            weak = learner_service.get_weak_topics(self.student_id, self.document_id, limit=1)
+            if weak:
+                topic_id = weak[0]["topic_id"]
+        if not topic_id:
+            return "No topic was given and there is no student history to choose one. Ask the student which topic to quiz."
+
+        topic = learner_service.get_topic(topic_id, self.document_id)
+        if topic is None:
+            return f"Topic '{topic_id}' was not found in this document."
+
+        query = f"{topic['name']}: {topic['description']}"
+        context = search_topic(topic["key"], query, self.vector_db) or self._get_context(topic["name"])
+        quiz = generate_quiz(context, topic=topic["name"], num_questions=5, difficulty=difficulty)
+        if not quiz:
+            return f"Could not generate a quiz for '{topic['name']}' from the available context."
+
+        for question in quiz:
+            question["topic_id"] = topic["id"]
+        self.artifacts.quiz = quiz
+        return f"Successfully created a {len(quiz)}-question {difficulty} quiz on the topic '{topic['name']}'. The quiz is ready."
 
     def _build_tools(self):
         artifacts = self.artifacts
@@ -97,6 +134,11 @@ class TutorAgent:
                 artifacts.quiz = quiz
                 return f"Successfully created a {len(quiz)}-question practice quiz on '{topic}'. The quiz is ready."
             return f"Could not generate a quiz for '{topic}' from the available context."
+
+        @tool
+        def quiz_creator_targeted(topic_id: str = "", difficulty: str = "medium") -> str:
+            """Generate a practice quiz focused on ONE topic, ideally the student's weak topic. topic_id is a topic id like 'T3'; leave it empty to quiz the student's weakest topic. difficulty is 'easy', 'medium' or 'hard'."""
+            return self.make_targeted_quiz(topic_id, difficulty)
 
         @tool
         def study_planner(topic: str = "") -> str:
@@ -132,6 +174,7 @@ class TutorAgent:
             document_search,
             flashcard_creator,
             quiz_creator,
+            quiz_creator_targeted,
             study_planner,
             adaptive_remedial_evaluator,
             audio_narrator
@@ -146,7 +189,8 @@ class TutorAgent:
         messages = [SystemMessage(content=TUTOR_SYSTEM_PROMPT)]
 
         if chat_history:
-            for role, content in chat_history:
+            for role, content in chat_history[-config.MAX_HISTORY_MESSAGES:]:
+                content = _clip(content, config.MAX_HISTORY_CHARS)
                 if role in ("human", "user"):
                     messages.append(HumanMessage(content=content))
                 elif role in ("ai", "assistant"):
@@ -158,7 +202,19 @@ class TutorAgent:
 
         # Autonomous reasoning loop (max 5 tool call iterations)
         for _ in range(5):
-            ai_msg = self.model_with_tools.invoke(messages)
+            try:
+                ai_msg = self.model_with_tools.invoke(messages)
+            except Exception as e:
+                # Usually a provider rate limit. Keep any artifacts already generated by earlier tool calls.
+                return {
+                    "response": (
+                        "⚠️ The AI service couldn't complete that request "
+                        f"({type(e).__name__}). If this is a rate limit, wait about a minute and try again.\n\n"
+                        f"Details: {e}"
+                    ),
+                    "artifacts": self.artifacts.get_artifacts(),
+                    "messages": messages,
+                }
             messages.append(ai_msg)
 
             if not hasattr(ai_msg, "tool_calls") or not ai_msg.tool_calls:
@@ -179,7 +235,7 @@ class TutorAgent:
                     tool_output = f"Tool '{tool_name}' is not recognized."
 
                 messages.append(ToolMessage(
-                    content=str(tool_output),
+                    content=_clip(tool_output, config.MAX_TOOL_OUTPUT_CHARS),
                     tool_call_id=tool_id,
                     name=tool_name
                 ))
@@ -242,11 +298,13 @@ def process_document(file_path: str, student_id: Optional[str] = None) -> Dict[s
     }
 
 
-def create_tutor_agent(vector_db=None, full_text: str = "", doc_name: str = "Document") -> TutorAgent:
+def create_tutor_agent(vector_db=None, full_text: str = "", doc_name: str = "Document",
+                       student_id: Optional[str] = None, document_id: Optional[str] = None) -> TutorAgent:
     """
     Instantiates and returns an autonomous TutorAgent.
     """
-    return TutorAgent(vector_db=vector_db, full_text=full_text, doc_name=doc_name)
+    return TutorAgent(vector_db=vector_db, full_text=full_text, doc_name=doc_name,
+                      student_id=student_id, document_id=document_id)
 
 
 def run_agent_query(agent: Any, query: str, chat_history=None) -> Any:

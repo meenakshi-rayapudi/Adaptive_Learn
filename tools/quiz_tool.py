@@ -3,12 +3,23 @@ from typing import List, Dict, Any
 from core.provider import get_llm
 from tools.parser import safe_json_parse, extract_json_from_text
 
-def generate_quiz(text: str, topic: str = "General", num_questions: int = 5) -> List[Dict[str, Any]]:
+DIFFICULTY_GUIDE = {
+    "easy": "straightforward recall of key terms and basic definitions",
+    "medium": "understanding and applying the concepts",
+    "hard": "multi-step reasoning, edge cases, and telling similar concepts apart",
+}
+
+
+def generate_quiz(text: str, topic: str = "General", num_questions: int = 5, difficulty: str = "medium") -> List[Dict[str, Any]]:
     """
     Generates structured quiz questions (MCQ and True/False) with explanations from educational text.
     """
     if not text or not text.strip():
         return []
+
+    difficulty = difficulty.lower().strip()
+    if difficulty not in DIFFICULTY_GUIDE:
+        difficulty = "medium"
 
     llm = get_llm()
 
@@ -16,6 +27,7 @@ def generate_quiz(text: str, topic: str = "General", num_questions: int = 5) -> 
 You are an expert AI Assessment Designer and Academic Tutor.
 
 Topic: {topic}
+Difficulty: {difficulty} - questions should test {DIFFICULTY_GUIDE[difficulty]}.
 
 Create {num_questions} rigorous practice questions based strictly on the text provided below.
 Include a mix of Multiple Choice (MCQ) and True/False questions.

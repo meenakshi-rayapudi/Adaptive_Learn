@@ -32,7 +32,7 @@ A student just completed a practice assessment and missed the following question
 {questions_str}
 
 RELEVANT STUDY CONTEXT:
-{context[:6000] if context else "Use general domain knowledge based on the questions."}
+{context[:4000] if context else "Use general domain knowledge based on the questions."}
 
 TASK:
 Generate a comprehensive, supportive, and actionable "Personalized Remedial Mastery Guide".

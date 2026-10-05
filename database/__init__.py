@@ -7,6 +7,7 @@ from .schema import (
     QuizAttempt,
     QuizQuestion,
     FlashcardEvent,
+    EngagementEvent,
     Recommendation,
 )
 from .db import get_engine, get_session, init_db
@@ -20,6 +21,7 @@ __all__ = [
     "QuizAttempt",
     "QuizQuestion",
     "FlashcardEvent",
+    "EngagementEvent",
     "Recommendation",
     "get_engine",
     "get_session",
