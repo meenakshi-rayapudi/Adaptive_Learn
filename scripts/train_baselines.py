@@ -21,6 +21,7 @@ sys.path.append(os.path.dirname(script_dir))
 
 import joblib
 import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
@@ -63,15 +64,35 @@ def load_source(args):
     return data.events_by_student, data.wallclock, data.split_mode
 
 
+class ZeroFillAllNanColumns(BaseEstimator, TransformerMixin):
+    """
+    Fills columns that are 100% NaN with a constant 0.0.
+    HistGradientBoostingClassifier natively handles partially missing values (NaNs),
+    but crashes if a column has ZERO observed values (100% NaN) because it cannot
+    compute binning thresholds.
+    """
+    def fit(self, X, y=None):
+        X_df = pd.DataFrame(X)
+        self.all_nan_cols_ = [c for c in X_df.columns if X_df[c].isna().all()]
+        return self
+
+    def transform(self, X):
+        X_df = pd.DataFrame(X).copy()
+        for c in self.all_nan_cols_:
+            X_df[c] = X_df[c].fillna(0.0)
+        return X_df
+
+
 def make_models():
     return {
         "prior_only": Pipeline([("clf", DummyClassifier(strategy="prior"))]),
         "logistic_regression": Pipeline([
-            ("impute", SimpleImputer(strategy="median", add_indicator=True)),
+            ("impute", SimpleImputer(strategy="median", add_indicator=True, keep_empty_features=True)),
             ("scale", StandardScaler()),
             ("clf", LogisticRegression(max_iter=1000)),
         ]),
         "hist_gbdt": Pipeline([
+            ("fix_all_nan", ZeroFillAllNanColumns()),
             ("clf", HistGradientBoostingClassifier(max_depth=4, learning_rate=0.05, max_iter=200, random_state=42)),
         ]),
     }
