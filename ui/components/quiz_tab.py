@@ -1,4 +1,5 @@
 import datetime
+import time
 import streamlit as st
 from core.learner_service import log_quiz_attempt
 from ui.components.drill import show_weak_topic_drill, show_drill_banner
@@ -56,6 +57,12 @@ def render_quiz_tab(send_agent_goal) -> None:
 
 
 def _render_active_quiz(send_agent_goal) -> None:
+    # Start the clock when this quiz first appears on screen (it restarts for a new or retaken quiz)
+    quiz_key = st.session_state.quiz[0].get("question")
+    if st.session_state.get("quiz_timer_key") != quiz_key:
+        st.session_state.quiz_timer_key = quiz_key
+        st.session_state.quiz_started_at = time.time()
+
     st.info("Select your answers and click **Submit Assessment** at the bottom.")
     for i, q in enumerate(st.session_state.quiz):
         st.markdown(f"#### Q{i+1}: {q.get('question')}")
@@ -102,9 +109,12 @@ def _render_active_quiz(send_agent_goal) -> None:
         st.session_state.quiz_submitted = True
 
         # Save to the database so this quiz counts toward the student's weak topics
+        seconds_spent = time.time() - st.session_state.quiz_started_at
+        st.session_state.quiz_timer_key = None  # a retake starts a fresh clock
         log_quiz_attempt(
             st.session_state.get("student_id"), st.session_state.get("document_id"),
             st.session_state.quiz, st.session_state.user_answers, topics=st.session_state.get("topics"),
+            seconds_spent=seconds_spent,
         )
 
         # Persist score to CSV analytics

@@ -164,7 +164,8 @@ def get_flashcard_html(front, back, status, key, height=220):
 #  MAIN DISPLAY FUNCTION
 # ─────────────────────────────────────────────
 
-def display_flashcards(cards, on_quiz_drill=None):
+def display_flashcards(cards, on_quiz_drill=None, on_review=None):
+    # on_review(card, passed) is called whenever a student marks a card Mastered (True) or Needs Review (False)
     if not cards:
         st.info("No flashcards generated.")
         return
@@ -279,6 +280,8 @@ def display_flashcards(cards, on_quiz_drill=None):
 
         with act_col2:
             if st.button("🔁 Need Review", type="secondary", use_container_width=True):
+                if on_review:
+                    on_review(current_card, False)
                 current_card["status"] = "review"
                 current_card["review_count"] = current_card.get("review_count", 0) + 1
                 _mark_seen(current_card)
@@ -287,6 +290,8 @@ def display_flashcards(cards, on_quiz_drill=None):
 
         with act_col3:
             if st.button("✅ Mastered", type="primary", use_container_width=True):
+                if on_review:
+                    on_review(current_card, True)
                 current_card["status"] = "mastered"
                 current_card["review_count"] = 0
                 _mark_seen(current_card)
@@ -330,12 +335,16 @@ def display_flashcards(cards, on_quiz_drill=None):
                 btn_col1, btn_col2 = st.columns(2)
                 with btn_col1:
                     if st.button("✅ Mastered", key=f"master_{orig_i}"):
+                        if on_review:
+                            on_review(card, True)
                         card["status"]       = "mastered"
                         card["review_count"] = 0
                         _mark_seen(card)
                         st.rerun()
                 with btn_col2:
                     if st.button("🔁 Review", key=f"review_{orig_i}"):
+                        if on_review:
+                            on_review(card, False)
                         card["status"]        = "review"
                         card["review_count"]  = card.get("review_count", 0) + 1
                         _mark_seen(card)

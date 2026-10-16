@@ -1,4 +1,5 @@
 import streamlit as st
+from core.learner_service import log_flashcard_review
 from ui.flashcard_ui import display_flashcards
 
 
@@ -47,7 +48,11 @@ def render_flashcards_tab(send_agent_goal) -> None:
             del st.session_state.user_answers
         st.rerun()
 
+    def on_review(card, passed):
+        log_flashcard_review(st.session_state.get("student_id"), st.session_state.get("document_id"),
+                             card, passed, topics=st.session_state.get("topics"))
+
     if st.session_state.flashcards:
-        display_flashcards(st.session_state.flashcards, on_quiz_drill=on_quiz_drill)
+        display_flashcards(st.session_state.flashcards, on_quiz_drill=on_quiz_drill, on_review=on_review)
     else:
         st.info("No flashcard deck active. Click the button above or ask your AI Tutor in chat to build a flashcard deck!")

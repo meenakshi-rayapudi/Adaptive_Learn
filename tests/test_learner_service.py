@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from core import learner_service as svc
-from database.schema import Base, Student, Document, Topic, QuizAttempt, QuizQuestion
+from database.schema import Base, Student, Document, Topic, QuizAttempt, QuizQuestion, FlashcardEvent
 from tools import quiz_tool
 from tools.retrieval_tool import search_topic
 
@@ -168,6 +168,63 @@ class TestWithDatabase(unittest.TestCase):
         quiz = [{"question": "q", "type": "mcq", "options": ["a"], "answer": "a"}]
         saved = self.tag_with_fake_matcher(quiz, [{"topic_id": "D1_T2", "name": "Deadlocks", "description": ""}], "D1_T2")
         self.assertEqual(saved, "D1_T2")
+
+    def test_quiz_time_is_shared_equally_and_kept_in_bounds(self):
+        def latencies(seconds):
+            attempt_id = svc.log_quiz_attempt("stu", "D1", self.drill_quiz() + [self.drill_quiz()[0]], {},
+                                              seconds_spent=seconds, session=self.session)
+            rows = self.session.query(QuizQuestion).filter_by(quiz_attempt_id=attempt_id).all()
+            return {r.latency_ms for r in rows}
+
+        self.assertEqual(latencies(40), {10_000})        # 4 questions in 40 s
+        self.assertEqual(latencies(0.1), {500})           # too fast to be real
+        self.assertEqual(latencies(100_000), {120_000})   # tab left open
+        attempt_id = svc.log_quiz_attempt("stu", "D1", self.drill_quiz(), {}, session=self.session)
+        self.assertIsNone(self.session.query(QuizQuestion).filter_by(quiz_attempt_id=attempt_id).first().latency_ms)
+
+    def new_card(self, topic_id="D1_T3"):
+        return {"front": "What is paging?", "back": "Splitting memory into fixed blocks", "topic_id": topic_id}
+
+    def test_flashcard_reviews_follow_the_sm2_schedule(self):
+        card = self.new_card()
+        svc.log_flashcard_review("stu", "D1", card, True, session=self.session)
+        self.assertEqual((card["repetition_count"], card["interval_days"]), (1, 1))
+        svc.log_flashcard_review("stu", "D1", card, True, session=self.session)
+        self.assertEqual((card["repetition_count"], card["interval_days"]), (2, 6))
+        svc.log_flashcard_review("stu", "D1", card, False, session=self.session)
+        self.assertEqual((card["repetition_count"], card["interval_days"]), (0, 1))
+
+        events = self.session.query(FlashcardEvent).order_by(FlashcardEvent.id).all()
+        self.assertEqual([e.quality for e in events], [4, 4, 2])
+        self.assertEqual([e.repetition_count for e in events], [1, 2, 0])
+        self.assertEqual(events[0].topic_id, "D1_T3")
+        self.assertEqual(events[1].next_review_at - events[1].reviewed_at, dt.timedelta(days=6))
+
+    def test_a_reviewed_flashcard_feeds_the_mastery_feature(self):
+        from engine.features import compute_feature_vector
+        self.assertIsNone(compute_feature_vector("stu", "D1_T3", session=self.session).f)
+        svc.log_flashcard_review("stu", "D1", self.new_card(), True, session=self.session)
+        self.assertGreater(compute_feature_vector("stu", "D1_T3", session=self.session).f, 0)
+
+    def test_flashcard_with_a_placeholder_topic_is_tagged_once(self):
+        import core.topic_extractor as te
+        original = te.assign_topics_to_chunks
+        calls = []
+        te.assign_topics_to_chunks = lambda texts, tps: calls.append(1) or [{"chunk": t, "topic_id": "T2", "similarity": 0.9} for t in texts]
+        try:
+            card = self.new_card(topic_id="General")
+            topics = [{"topic_id": "T2", "name": "Deadlocks", "description": ""}]
+            svc.log_flashcard_review("stu", "D1", card, True, topics=topics, session=self.session)
+            svc.log_flashcard_review("stu", "D1", card, True, topics=topics, session=self.session)
+        finally:
+            te.assign_topics_to_chunks = original
+        self.assertEqual(card["topic_id"], "D1_T2")
+        self.assertEqual(len(calls), 1)  # the second review reused the saved topic
+
+    def test_flashcard_schedule_still_moves_without_a_student(self):
+        card = self.new_card()
+        self.assertIsNone(svc.log_flashcard_review(None, "D1", card, True, session=self.session))
+        self.assertEqual(card["repetition_count"], 1)
 
     def test_nothing_is_saved_without_a_student_or_questions(self):
         self.assertIsNone(svc.log_quiz_attempt(None, "D1", self.drill_quiz(), {}, session=self.session))

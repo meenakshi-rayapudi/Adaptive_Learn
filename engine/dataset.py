@@ -18,6 +18,7 @@ the attempt), exactly how the recommender is used in production: it scores
 topics between attempts, not mid-quiz.
 """
 
+import os
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -30,6 +31,12 @@ FAIL_ACCURACY_THRESHOLD = 0.6
 MIN_ATTEMPTS_FOR_ML = 3   # student_attempts >= 3 hands over from the cold-start heuristic to the ML model
 
 SNAPSHOT_COLUMNS = ["student_id", "topic_id", "ts", "n_prior", "n_questions"] + FEATURE_NAMES + ["y_deficit", "y_fail"]
+
+BENCHMARK_SNAPSHOTS = os.path.join("data", "benchmarks", "assistments_snapshots.csv")
+
+# E counts hints in ASSISTments but chat/remedial activity in the app, so the two don't mean the
+# same thing. The model scores the same without it (ROC-AUC 0.804 either way), so it is left out.
+LEFT_OUT_FEATURES = ["E"]
 
 
 def build_snapshot_dataset(events_by_student: Dict[str, List[Event]], wallclock: bool = True) -> pd.DataFrame:
@@ -75,6 +82,21 @@ def build_snapshot_dataset(events_by_student: Dict[str, List[Event]], wallclock:
 
     df = pd.DataFrame(rows, columns=SNAPSHOT_COLUMNS)
     return df.sort_values("ts", kind="stable").reset_index(drop=True)
+
+
+def load_benchmark_split(min_prior: int = MIN_ATTEMPTS_FOR_ML, path: str = BENCHMARK_SNAPSHOTS):
+    """
+    Reads the ASSISTments snapshots, keeps attempts where the student already had `min_prior` earlier
+    attempts, and splits by time (earliest 80% train, latest 20% test). Returns (train, test, features),
+    where `features` are the columns that carry information in this data (the others are empty or
+    constant because ASSISTments has no dates, flashcards or recommendations) minus LEFT_OUT_FEATURES.
+    """
+    df = pd.read_csv(path)
+    df = df[df["n_prior"] >= min_prior]
+    train, test = temporal_split(df, train_frac=0.8, mode="global")
+    assert_no_temporal_leakage(train, test, mode="global")
+    features = [f for f in FEATURE_NAMES if df[f].nunique(dropna=True) > 1 and f not in LEFT_OUT_FEATURES]
+    return train, test, features
 
 
 def to_model_frame(df: pd.DataFrame) -> pd.DataFrame:

@@ -77,31 +77,54 @@ class TutorAgent:
                 return retrieved
         return self.full_text if self.full_text else query
 
-    def make_targeted_quiz(self, topic_id: str = "", difficulty: str = "medium") -> str:
+    def _topic_and_context(self, topic_id: str):
         """
-        Builds a 5-question quiz on one topic and stores it in self.artifacts.quiz.
-        An empty topic_id means "this student's weakest topic". Used by the
-        quiz_creator_targeted tool and by the UI's "Review Weak Topic" button.
+        Finds a topic and the document text about it. An empty topic_id means "this student's
+        weakest topic". Returns (topic, context, error_message); error_message is None on success.
         """
         if not topic_id and self.student_id and self.document_id:
             weak = learner_service.get_weak_topics(self.student_id, self.document_id, limit=1)
             if weak:
                 topic_id = weak[0]["topic_id"]
         if not topic_id:
-            return "No topic was given and there is no student history to choose one. Ask the student which topic to quiz."
+            return None, None, "No topic was given and there is no student history to choose one. Ask the student which topic to use."
 
         topic = learner_service.get_topic(topic_id, self.document_id)
         if topic is None:
-            return f"Topic '{topic_id}' was not found in this document."
+            return None, None, f"Topic '{topic_id}' was not found in this document."
 
         query = f"{topic['name']}: {topic['description']}"
         context = search_topic(topic["id"], query, self.vector_db) or self._get_context(topic["name"])
+        return topic, context, None
+
+    def make_targeted_quiz(self, topic_id: str = "", difficulty: str = "medium") -> str:
+        """
+        Builds a 5-question quiz on one topic and stores it in self.artifacts.quiz.
+        Used by the quiz_creator_targeted tool and by the UI's "Take Targeted Quiz" button.
+        """
+        topic, context, error = self._topic_and_context(topic_id)
+        if error:
+            return error
+
         quiz = generate_quiz(context, topic=topic["name"], num_questions=5, topic_id=topic["id"], difficulty=difficulty)
         if not quiz:
             return f"Could not generate a quiz for '{topic['name']}' from the available context."
 
         self.artifacts.quiz = quiz
         return f"Successfully created a {len(quiz)}-question {difficulty} quiz on the topic '{topic['name']}'. The quiz is ready."
+
+    def make_targeted_flashcards(self, topic_id: str = "", num_cards: int = 8) -> str:
+        """Builds a short flashcard deck on one topic and stores it in self.artifacts.flashcards (UI: "Launch Flashcard Drill")."""
+        topic, context, error = self._topic_and_context(topic_id)
+        if error:
+            return error
+
+        cards = generate_flashcards(context, topic=topic["name"], num_cards=num_cards, topic_id=topic["id"])
+        if not cards:
+            return f"Could not generate flashcards for '{topic['name']}' from the available context."
+
+        self.artifacts.flashcards = cards
+        return f"Successfully created {len(cards)} flashcards on the topic '{topic['name']}'. The cards are ready."
 
     def _build_tools(self):
         artifacts = self.artifacts

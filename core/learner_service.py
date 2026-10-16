@@ -16,9 +16,9 @@ from collections import Counter
 from typing import Dict, List, Optional
 
 from database.db import get_session
-from database.schema import Topic, EngagementEvent, QuizAttempt, QuizQuestion
-from engine.cold_start import cold_start_score
-from engine.features import compute_topic_vectors
+from database.schema import Topic, EngagementEvent, QuizAttempt, QuizQuestion, FlashcardEvent
+from engine.recommender import recommend_topics
+from engine.spaced_repetition import update_card_review
 
 # A new "study session" starts after this many idle minutes.
 SESSION_GAP_MINUTES = 15
@@ -49,61 +49,33 @@ def get_topic(topic_id: str, document_id: Optional[str] = None, session=None) ->
             session.close()
 
 
-def _deficit(fv) -> float:
-    """
-    Day-1 weakness score, using the cold-start formula in engine/cold_start.py.
-    A missing value counts against the topic: never studied = fully stale (handled
-    by cold_start_score), no flashcards = no mastery, never quizzed = 50/50 on accuracy.
-    Week 4 swaps this for the trained model once a student has 3+ attempts.
-    """
-    accuracy = fv.a if fv.a is not None else 0.5
-    mastery = fv.f if fv.f is not None else 0.0
-    return cold_start_score(accuracy, fv.r, mastery)
-
-
 def get_weak_topics(student_id: str, document_id: str, limit: int = 3, session=None) -> List[Dict]:
-    """The student's weakest topics in a document, weakest first."""
-    own_session = session is None
-    session = session or get_session()
-    try:
-        topics = session.query(Topic).filter(Topic.document_id == document_id).all()
-        if not topics:
-            return []
-
-        vectors = compute_topic_vectors(student_id, [t.id for t in topics], session=session)
-        names = {t.id: t.name for t in topics}
-
-        ranked = [
-            {"topic_id": fv.topic_id, "name": names[fv.topic_id], "deficit": round(_deficit(fv), 3),
-             "accuracy": fv.a, "days_since_study": fv.r}
-            for fv in vectors
-        ]
-        ranked.sort(key=lambda row: row["deficit"], reverse=True)
-        return ranked[:limit]
-    finally:
-        if own_session:
-            session.close()
+    """
+    The student's weakest topics in a document, weakest first. Ranked by the trained model once the
+    student has 3+ quiz attempts, by the cold-start formula before that (see engine/recommender.py).
+    """
+    return recommend_topics(student_id, document_id, limit=limit, session=session)
 
 
 # ---------------------------------------------------------------------------
 # Saving quiz results
 # ---------------------------------------------------------------------------
 
-def _tag_questions(quiz: List[Dict], document_id: Optional[str], topics: Optional[List[Dict]]) -> List[Optional[str]]:
+def _tag_items(items: List[Dict], document_id: Optional[str], topics: Optional[List[Dict]], text_of) -> List[Optional[str]]:
     """
-    Full topic id for every question. Drill quizzes already carry a real one. generate_quiz stamps a
-    placeholder like "General" when it isn't given a topic, so only ids that belong to this document
-    count as real; the rest get the closest topic by text similarity (same local matching used for
-    document chunks, no LLM call).
+    Full topic id for every quiz question or flashcard. Items from a drill already carry a real one.
+    generate_quiz and generate_flashcards stamp a placeholder like "General" when they aren't given a
+    topic, so only ids that belong to this document count as real; the rest get the closest topic by
+    text similarity (same local matching used for document chunks, no LLM call).
     """
     prefix = f"{document_id}_" if document_id else None
-    topic_ids = [q.get("topic_id") if prefix and str(q.get("topic_id") or "").startswith(prefix) else None
-                 for q in quiz]
+    topic_ids = [item.get("topic_id") if prefix and str(item.get("topic_id") or "").startswith(prefix) else None
+                 for item in items]
     missing = [i for i, t in enumerate(topic_ids) if not t]
 
     if missing and topics and document_id:
         from core.topic_extractor import assign_topics_to_chunks
-        texts = [f"{quiz[i].get('question', '')} {quiz[i].get('answer', '')}" for i in missing]
+        texts = [text_of(items[i]) for i in missing]
         for i, tagged in zip(missing, assign_topics_to_chunks(texts, topics)):
             tid = tagged["topic_id"]
             if tid:
@@ -111,12 +83,19 @@ def _tag_questions(quiz: List[Dict], document_id: Optional[str], topics: Optiona
     return topic_ids
 
 
+def _tag_questions(quiz: List[Dict], document_id: Optional[str], topics: Optional[List[Dict]]) -> List[Optional[str]]:
+    return _tag_items(quiz, document_id, topics, lambda q: f"{q.get('question', '')} {q.get('answer', '')}")
+
+
 def log_quiz_attempt(student_id: Optional[str], document_id: Optional[str], quiz: List[Dict],
                      user_answers: Dict[int, str], topics: Optional[List[Dict]] = None,
+                     seconds_spent: Optional[float] = None,
                      at: Optional[dt.datetime] = None, session=None) -> Optional[int]:
     """
     Saves a finished quiz (one attempt row plus one row per question) so it counts toward the
     student's weak topics. `user_answers` maps question number -> chosen answer.
+    `seconds_spent` is the time the whole quiz took; each question is given an equal share as its
+    response time (the quiz is answered on one page, so per-question times aren't measured).
     Returns the attempt id, or None if nothing was saved. Never raises.
     """
     if not student_id or not quiz:
@@ -128,6 +107,10 @@ def log_quiz_attempt(student_id: Optional[str], document_id: Optional[str], quiz
         topic_ids = _tag_questions(quiz, document_id, topics)
         correct = [user_answers.get(i) == q.get("answer") for i, q in enumerate(quiz)]
         now = at or dt.datetime.utcnow()
+
+        latency_ms = None
+        if seconds_spent is not None:
+            latency_ms = int(min(max(seconds_spent * 1000 / len(quiz), 500), 120_000))  # same bounds as feature T
 
         tagged = [t for t in topic_ids if t]
         attempt = QuizAttempt(
@@ -144,12 +127,56 @@ def log_quiz_attempt(student_id: Optional[str], document_id: Optional[str], quiz
                 quiz_attempt_id=attempt.id, topic_id=topic_ids[i],
                 question_text=q.get("question", ""), question_type=q.get("type", "mcq"),
                 options=json.dumps(q.get("options", [])), correct_answer=q.get("answer", ""),
-                user_answer=user_answers.get(i), is_correct=correct[i],
+                user_answer=user_answers.get(i), is_correct=correct[i], latency_ms=latency_ms,
             ))
         session.commit()
         return attempt.id
     except Exception as e:
         print(f"Warning: could not save quiz attempt: {e}")
+        if session is not None:
+            session.rollback()
+        return None
+    finally:
+        if own_session and session is not None:
+            session.close()
+
+
+def log_flashcard_review(student_id: Optional[str], document_id: Optional[str], card: Dict, passed: bool,
+                         topics: Optional[List[Dict]] = None, at: Optional[dt.datetime] = None,
+                         session=None) -> Optional[int]:
+    """
+    Saves one flashcard review and moves the card's spaced-repetition (SM-2) schedule forward.
+    passed=True is a good recall (quality 4), passed=False a miss (quality 2). The schedule lives on the
+    card itself (ease_factor, interval_days, repetition_count) and is updated even if saving fails.
+    Returns the saved event id, or None. Never raises.
+    """
+    quality = 4 if passed else 2
+    card["ease_factor"], card["interval_days"], card["repetition_count"] = update_card_review(
+        card.get("ease_factor", 2.5), card.get("interval_days", 0), card.get("repetition_count", 0), quality)
+
+    if not student_id:
+        return None
+
+    own_session = session is None
+    try:
+        session = session or get_session()
+        topic_id = _tag_items([card], document_id, topics, lambda c: f"{c.get('front', '')} {c.get('back', '')}")[0]
+        if topic_id:
+            card["topic_id"] = topic_id  # remembered, so this card isn't matched again on its next review
+
+        now = at or dt.datetime.utcnow()
+        event = FlashcardEvent(
+            student_id=student_id, document_id=document_id, topic_id=topic_id,
+            card_front=card.get("front", ""), card_back=card.get("back", ""), quality=quality,
+            ease_factor=card["ease_factor"], interval_days=card["interval_days"],
+            repetition_count=card["repetition_count"],
+            reviewed_at=now, next_review_at=now + dt.timedelta(days=card["interval_days"]),
+        )
+        session.add(event)
+        session.commit()
+        return event.id
+    except Exception as e:
+        print(f"Warning: could not save flashcard review: {e}")
         if session is not None:
             session.rollback()
         return None

@@ -1,27 +1,29 @@
 """
-Builds the normalized feature table from a data source, splits it chronologically
-(80% early / 20% late), trains baseline models, and reports evaluation baselines.
+Trains the baseline models on the ASSISTments benchmark data in data/benchmarks.
 
-This is the Week 3 baseline only. The full model tournament (LightGBM, XGBoost,
-MLP, Random Forest, SHAP) is Week 4.
+    python -m scripts.train_baselines
 
-Usage:
-    python -m scripts.train_baselines --source db
-    python -m scripts.train_baselines --source ednet --train-csv path/train.csv --questions-csv path/questions.csv --max-users 2000
-    python -m scripts.train_baselines --source assistments --train-csv path/skill_builder_data.csv
+It reads data/benchmarks/assistments_snapshots.csv (one row per attempt: the features
+Q, A, T, R, F, E, H computed from the student's past, plus whether they then failed),
+splits it by time (earliest 80% train, latest 20% test), trains three simple models
+and prints ROC-AUC, PR-AUC and Brier score on the held-out late 20%.
+
+To rebuild that CSV from the raw ASSISTments file:
+    python -m scripts.train_baselines --raw-csv path/to/skill_builder_data.csv
+
+Features that are empty or constant in this data (ASSISTments has no dates, flashcards
+or recommendations) are skipped automatically.
 """
 
 import argparse
 import os
 import sys
-import time
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(script_dir))
 
 import joblib
 import pandas as pd
-from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
@@ -30,69 +32,22 @@ from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_s
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from engine.dataset import (MIN_ATTEMPTS_FOR_ML, assert_no_temporal_leakage, build_snapshot_dataset,
-                            temporal_split, to_model_frame)
+from engine.dataset import BENCHMARK_SNAPSHOTS as SNAPSHOTS
+from engine.dataset import MIN_ATTEMPTS_FOR_ML, load_benchmark_split, to_model_frame
 from engine.feature_spec import FEATURE_NAMES
 
-OUT_DIR = os.path.join("data", "benchmarks")
-ARTIFACT_DIR = os.path.join("engine", "artifacts")
-
-
-def load_source(args):
-    if args.source == "db":
-        from database.db import get_session, init_db
-        from database.schema import Student
-        from engine.features import load_student_events
-        init_db()
-        session = get_session()
-        try:
-            ids = [s.id for s in session.query(Student).all()]
-            events = {sid: load_student_events(sid, session=session) for sid in ids}
-        finally:
-            session.close()
-        return events, True, "global"
-
-    from engine import benchmarks
-    if not args.train_csv:
-        sys.exit("--train-csv is required for this source.")
-    if args.source == "ednet":
-        if not args.questions_csv:
-            sys.exit("--questions-csv is required for the ednet source.")
-        data = benchmarks.load_ednet_events(args.train_csv, args.questions_csv, args.max_users, args.max_rows)
-    else:
-        data = benchmarks.load_assistments_events(args.train_csv, args.max_users, args.max_rows)
-    return data.events_by_student, data.wallclock, data.split_mode
-
-
-class ZeroFillAllNanColumns(BaseEstimator, TransformerMixin):
-    """
-    Fills columns that are 100% NaN with a constant 0.0.
-    HistGradientBoostingClassifier natively handles partially missing values (NaNs),
-    but crashes if a column has ZERO observed values (100% NaN) because it cannot
-    compute binning thresholds.
-    """
-    def fit(self, X, y=None):
-        X_df = pd.DataFrame(X)
-        self.all_nan_cols_ = [c for c in X_df.columns if X_df[c].isna().all()]
-        return self
-
-    def transform(self, X):
-        X_df = pd.DataFrame(X).copy()
-        for c in self.all_nan_cols_:
-            X_df[c] = X_df[c].fillna(0.0)
-        return X_df
+ARTIFACT = os.path.join("engine", "artifacts", "baseline_assistments.joblib")
 
 
 def make_models():
     return {
         "prior_only": Pipeline([("clf", DummyClassifier(strategy="prior"))]),
         "logistic_regression": Pipeline([
-            ("impute", SimpleImputer(strategy="median", add_indicator=True, keep_empty_features=True)),
+            ("impute", SimpleImputer(strategy="median", add_indicator=True)),
             ("scale", StandardScaler()),
             ("clf", LogisticRegression(max_iter=1000)),
         ]),
         "hist_gbdt": Pipeline([
-            ("fix_all_nan", ZeroFillAllNanColumns()),
             ("clf", HistGradientBoostingClassifier(max_depth=4, learning_rate=0.05, max_iter=200, random_state=42)),
         ]),
     }
@@ -100,62 +55,45 @@ def make_models():
 
 def evaluate(model, X, y):
     p = model.predict_proba(X)[:, 1]
-    return {
-        "roc_auc": roc_auc_score(y, p),
-        "pr_auc": average_precision_score(y, p),
-        "brier": brier_score_loss(y, p),
-    }
+    return {"roc_auc": roc_auc_score(y, p), "pr_auc": average_precision_score(y, p), "brier": brier_score_loss(y, p)}
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train AdaptiveLearn baseline models on a temporal split.")
-    parser.add_argument("--source", choices=["db", "ednet", "assistments"], default="db")
-    parser.add_argument("--train-csv")
-    parser.add_argument("--questions-csv")
-    parser.add_argument("--max-users", type=int)
-    parser.add_argument("--max-rows", type=int)
+    parser = argparse.ArgumentParser(description="Train baseline models on the ASSISTments benchmark data.")
+    parser.add_argument("--raw-csv", help="Raw ASSISTments skill-builder CSV; rebuilds the snapshots file first.")
     parser.add_argument("--min-prior", type=int, default=MIN_ATTEMPTS_FOR_ML,
-                        help="Only train on attempts where the student already had this many prior attempts.")
+                        help="Only use attempts where the student already had this many earlier attempts.")
     args = parser.parse_args()
 
-    started = time.time()
-    events, wallclock, split_mode = load_source(args)
-    df = build_snapshot_dataset(events, wallclock=wallclock)
-    if df.empty:
-        sys.exit("No quiz attempts found in the chosen source.")
+    if args.raw_csv:
+        from engine.benchmarks import load_assistments_events
+        from engine.dataset import build_snapshot_dataset
+        data = load_assistments_events(args.raw_csv)
+        build_snapshot_dataset(data.events_by_student, wallclock=False).to_csv(SNAPSHOTS, index=False)
+        print(f"Rebuilt {SNAPSHOTS}")
+    elif not os.path.exists(SNAPSHOTS):
+        sys.exit(f"{SNAPSHOTS} not found. Put the data there, or pass --raw-csv.")
 
-    os.makedirs(OUT_DIR, exist_ok=True)
-    snapshot_path = os.path.join(OUT_DIR, f"{args.source}_snapshots.csv")
-    df.to_csv(snapshot_path, index=False)
-    print(f"Normalized {len(df):,} attempts from {df['student_id'].nunique():,} students -> {snapshot_path}")
-
-    df = df[df["n_prior"] >= args.min_prior]
-    train, test = temporal_split(df, train_frac=0.8, mode=split_mode)
-    assert_no_temporal_leakage(train, test, mode=split_mode)
-    print(f"Temporal split ({split_mode}): {len(train):,} train / {len(test):,} test "
+    train, test, features = load_benchmark_split(min_prior=args.min_prior)
+    print(f"Split by time: {len(train):,} train / {len(test):,} test "
           f"(fail rate {train['y_fail'].mean():.1%} / {test['y_fail'].mean():.1%})")
 
-    if test["y_fail"].nunique() < 2 or train["y_fail"].nunique() < 2:
-        sys.exit("Train or test set has only one class; cannot compute AUC. Use more data.")
+    skipped = [f for f in FEATURE_NAMES if f not in features]
+    print(f"Using features {features}; skipped (empty, constant or left out): {skipped}")
 
-    X_train, X_test = to_model_frame(train), to_model_frame(test)
+    X_train, X_test = to_model_frame(train)[features], to_model_frame(test)[features]
     results, fitted = {}, {}
     for name, model in make_models().items():
         model.fit(X_train, train["y_fail"])
         results[name] = evaluate(model, X_test, test["y_fail"])
         fitted[name] = model
 
-    table = pd.DataFrame(results).T[["roc_auc", "pr_auc", "brier"]].round(4)
-    print(f"\nEvaluation baselines on the held-out late 20% (features: {FEATURE_NAMES}):\n")
-    print(table.to_string())
+    print("\nBaselines on the held-out latest 20% of attempts:\n")
+    print(pd.DataFrame(results).T[["roc_auc", "pr_auc", "brier"]].round(4).to_string())
 
-    os.makedirs(ARTIFACT_DIR, exist_ok=True)
-    artifact_path = os.path.join(ARTIFACT_DIR, f"baseline_{args.source}.joblib")
-    joblib.dump({
-        "models": fitted, "feature_names": FEATURE_NAMES, "source": args.source,
-        "split_mode": split_mode, "metrics": results,
-    }, artifact_path)
-    print(f"\nSaved fitted pipelines (imputer + scaler + model) -> {artifact_path}  ({time.time() - started:.1f}s)")
+    os.makedirs(os.path.dirname(ARTIFACT), exist_ok=True)
+    joblib.dump({"models": fitted, "feature_names": features, "source": "assistments", "metrics": results}, ARTIFACT)
+    print(f"\nSaved the fitted pipelines (imputer + scaler + model) to {ARTIFACT}")
 
 
 if __name__ == "__main__":
