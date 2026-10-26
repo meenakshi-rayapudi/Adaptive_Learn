@@ -13,7 +13,7 @@ from ui.components.flashcards_tab import render_flashcards_tab
 from ui.components.quiz_tab import render_quiz_tab
 from ui.styles.css import load_css
 from ui.session_state import init_session_state
-from utils.analytics import show_analytics
+from ui.components.analytics_dashboard import render_learning_analytics_dashboard
 from core.engine import run_agent_query
 
 st.set_page_config(
@@ -114,4 +114,4 @@ with tab3:
 
 # ---------- TAB 4: LEARNING ANALYTICS DASHBOARD ----------
 with tab4:
-    show_analytics()
+    render_learning_analytics_dashboard()

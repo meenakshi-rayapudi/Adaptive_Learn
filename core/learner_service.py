@@ -13,7 +13,7 @@ call opens and closes its own database session.
 import datetime as dt
 import json
 from collections import Counter
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from database.db import get_session
 from database.schema import Topic, EngagementEvent, QuizAttempt, QuizQuestion, FlashcardEvent
@@ -252,3 +252,183 @@ def get_study_minutes(student_id: str, days: int = 7, now: Optional[dt.datetime]
     finally:
         if own_session:
             session.close()
+
+
+# ---------------------------------------------------------------------------
+# Week 5: Advanced Relational Analytics Queries
+# ---------------------------------------------------------------------------
+
+def get_accuracy_trends_by_topic(student_id: str, document_id: Optional[str] = None, session=None) -> List[Dict]:
+    """
+    Returns chronological quiz accuracy events grouped by topic over time.
+    Format:
+      [{"topic_id": str, "topic_name": str, "date": str, "timestamp": datetime, "accuracy": float, "is_correct": bool}]
+    """
+    own_session = session is None
+    session = session or get_session()
+    try:
+        query = (
+            session.query(
+                QuizQuestion.topic_id,
+                Topic.name.label("topic_name"),
+                QuizQuestion.created_at,
+                QuizQuestion.is_correct,
+            )
+            .join(QuizAttempt, QuizQuestion.quiz_attempt_id == QuizAttempt.id)
+            .outerjoin(Topic, QuizQuestion.topic_id == Topic.id)
+            .filter(
+                QuizAttempt.student_id == student_id,
+                QuizQuestion.is_correct.isnot(None),
+            )
+        )
+        if document_id:
+            query = query.filter(QuizAttempt.document_id == document_id)
+
+        rows = query.order_by(QuizQuestion.created_at.asc()).all()
+        results = []
+        for topic_id, topic_name, created_at, is_correct in rows:
+            results.append({
+                "topic_id": topic_id,
+                "topic_name": topic_name or topic_id or "General",
+                "timestamp": created_at,
+                "date": created_at.strftime("%Y-%m-%d") if created_at else None,
+                "is_correct": bool(is_correct),
+            })
+        return results
+    finally:
+        if own_session:
+            session.close()
+
+
+def get_flashcard_retention_breakdown(student_id: str, document_id: Optional[str] = None, session=None) -> Dict[str, Any]:
+    """
+    Categorizes the student's flashcards into SM-2 mastery stages:
+      - New: repetition_count == 0 (or reviewed only once with interval <= 1)
+      - Review (In Learning): repetition_count in [1, 2] or interval_days in [1, 6]
+      - Mastered: repetition_count >= 3 and interval_days >= 7
+    Also returns card-level retention records for calculating forgetting curves.
+    """
+    own_session = session is None
+    session = session or get_session()
+    try:
+        query = session.query(FlashcardEvent).filter(FlashcardEvent.student_id == student_id)
+        if document_id:
+            query = query.filter(FlashcardEvent.document_id == document_id)
+
+        # Get latest event per unique card (card_front)
+        events = query.order_by(FlashcardEvent.reviewed_at.desc()).all()
+        latest_cards: Dict[str, FlashcardEvent] = {}
+        for ev in events:
+            card_key = ev.card_front.strip().lower() if ev.card_front else str(ev.id)
+            if card_key not in latest_cards:
+                latest_cards[card_key] = ev
+
+        counts = {"new": 0, "review": 0, "mastered": 0}
+        card_details = []
+        for ev in latest_cards.values():
+            reps = ev.repetition_count or 0
+            interval = ev.interval_days or 0
+            ease = ev.ease_factor or 2.5
+
+            if reps >= 3 and interval >= 7:
+                category = "mastered"
+            elif reps >= 1:
+                category = "review"
+            else:
+                category = "new"
+
+            counts[category] += 1
+            card_details.append({
+                "id": ev.id,
+                "topic_id": ev.topic_id,
+                "category": category,
+                "reps": reps,
+                "interval_days": interval,
+                "ease_factor": ease,
+                "reviewed_at": ev.reviewed_at,
+            })
+
+        return {
+            "counts": counts,
+            "total_cards": len(latest_cards),
+            "cards": card_details,
+        }
+    finally:
+        if own_session:
+            session.close()
+
+
+def get_study_time_distribution(student_id: str, days: int = 7, now: Optional[dt.datetime] = None, session=None) -> Dict[str, Any]:
+    """
+    Returns daily and weekly study activity metrics:
+      - daily_minutes: {date_str: minutes}
+      - hourly_distribution: {hour_int: count_of_events}
+      - total_minutes: float
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if now.tzinfo is not None:
+        now_naive = now.replace(tzinfo=None)
+    else:
+        now_naive = now
+    since = now_naive - dt.timedelta(days=days)
+
+    own_session = session is None
+    session = session or get_session()
+    try:
+        rows = (
+            session.query(EngagementEvent.created_at)
+            .filter(
+                EngagementEvent.student_id == student_id,
+                EngagementEvent.created_at >= since,
+                EngagementEvent.created_at <= now_naive,
+            )
+            .order_by(EngagementEvent.created_at.asc())
+            .all()
+        )
+        timestamps = [r[0] for r in rows if r[0] is not None]
+
+        # Group timestamps by date for daily sessions
+        by_date: Dict[str, List[dt.datetime]] = {}
+        hourly: Dict[int, int] = {h: 0 for h in range(24)}
+
+        for t in timestamps:
+            d_str = t.strftime("%Y-%m-%d")
+            by_date.setdefault(d_str, []).append(t)
+            hourly[t.hour] = hourly.get(t.hour, 0) + 1
+
+        daily_minutes: Dict[str, float] = {}
+        for d_str, t_list in by_date.items():
+            daily_minutes[d_str] = minutes_from_timestamps(t_list)
+
+        total_mins = minutes_from_timestamps(timestamps)
+
+        # Weekly day-of-week distribution: Monday..Sunday
+        days_of_week = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        weekly_distribution: Dict[str, float] = {d: 0.0 for d in days_of_week}
+        for d_str, mins in daily_minutes.items():
+            try:
+                weekday_name = dt.datetime.strptime(d_str, "%Y-%m-%d").strftime("%a")
+                weekly_distribution[weekday_name] = weekly_distribution.get(weekday_name, 0.0) + mins
+            except Exception:
+                pass
+
+        # 7x24 Activity Heatmap matrix (rows: Mon..Sun, cols: hours 0..23)
+        heatmap_matrix = [[0 for _ in range(24)] for _ in range(7)]
+        for t in timestamps:
+            w_idx = t.weekday()  # 0 is Mon, 6 is Sun
+            h_idx = t.hour
+            heatmap_matrix[w_idx][h_idx] += 1
+
+        return {
+            "daily_minutes": daily_minutes,
+            "weekly_distribution": weekly_distribution,
+            "hourly_distribution": hourly,
+            "heatmap_matrix": heatmap_matrix,
+            "days_of_week": days_of_week,
+            "total_minutes": total_mins,
+            "days_covered": days,
+        }
+    finally:
+        if own_session:
+            session.close()
+

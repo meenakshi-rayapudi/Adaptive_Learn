@@ -221,8 +221,17 @@ class TutorAgent:
         Executes an autonomous ReAct tool-calling reasoning loop.
         """
         self.artifacts.reset_recent()
+        system_content = TUTOR_SYSTEM_PROMPT
+        if self.student_id and self.document_id:
+            try:
+                weak_topics = learner_service.get_weak_topics(self.student_id, self.document_id, limit=3)
+                if weak_topics:
+                    weak_list = ", ".join([f"{w['name']} (accuracy: {w['accuracy']:.0%})" if w['accuracy'] is not None else f"{w['name']} (untested)" for w in weak_topics])
+                    system_content += f"\n\nCURRENT STUDENT PROFILE & KNOWLEDGE STATE:\n- Weak/Remedial Topics: {weak_list}\nUse this knowledge state to proactively tailor explanations or suggest practice when appropriate."
+            except Exception as e:
+                pass
 
-        messages = [SystemMessage(content=TUTOR_SYSTEM_PROMPT)]
+        messages = [SystemMessage(content=system_content)]
 
         if chat_history:
             for role, content in chat_history[-config.MAX_HISTORY_MESSAGES:]:
