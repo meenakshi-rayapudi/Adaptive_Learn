@@ -7,6 +7,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from database.db import init_db, log_quiz_attempt, log_question_event, log_flashcard_review
 from engine.cold_start import cold_start_score, recency_penalty
 from engine.spaced_repetition import update_card_review
+from pydantic import ValidationError
+
 from models.schemas import FlashcardItem, QuizQuestionItem
 
 
@@ -42,16 +44,17 @@ class TestWeek2ColdStartAndSM2(unittest.TestCase):
         )
         self.assertEqual(question.topic_id, "D0001_T1")
 
-        legacy_item = FlashcardItem(front="What is a stack?", back="LIFO data structure.")
-        self.assertIsNone(legacy_item.topic_id)
+        # topic_id is mandatory: an item without one is rejected
+        with self.assertRaises(ValidationError):
+            FlashcardItem(front="What is a stack?", back="LIFO data structure.")
 
-        legacy_question = QuizQuestionItem(
-            question="A stack is FIFO.",
-            type="true_false",
-            options=["True", "False"],
-            answer="False",
-        )
-        self.assertIsNone(legacy_question.topic_id)
+        with self.assertRaises(ValidationError):
+            QuizQuestionItem(
+                question="A stack is FIFO.",
+                type="true_false",
+                options=["True", "False"],
+                answer="False",
+            )
 
 
 class TestWeek2DatabaseLogging(unittest.TestCase):

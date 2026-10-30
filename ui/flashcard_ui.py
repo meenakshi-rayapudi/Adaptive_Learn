@@ -18,6 +18,25 @@ def _mark_seen(card: dict) -> None:
     card["last_seen"] = _now_str()
 
 
+# The three ratings a student can give a card: button label, SM-2 recall quality (0-5), and the deck
+# status the card moves to. Hard means "didn't recall it": the schedule resets and the card goes to
+# the top of the deck for another pass.
+RATINGS = [
+    ("😓 Hard", 2, "review"),
+    ("👍 Good", 4, "mastered"),
+    ("🌟 Easy", 5, "mastered"),
+]
+
+
+def _rate_card(card: dict, quality: int, status: str, on_review) -> None:
+    """Records the rating (on_review saves it and moves the SM-2 schedule) and updates the card's deck status."""
+    if on_review:
+        on_review(card, quality)
+    card["status"] = status
+    card["review_count"] = card.get("review_count", 0) + 1 if status == "review" else 0
+    _mark_seen(card)
+
+
 def _sr_sort_key(card: dict):
     """
     Spaced Repetition sorting priority:
@@ -165,7 +184,7 @@ def get_flashcard_html(front, back, status, key, height=220):
 # ─────────────────────────────────────────────
 
 def display_flashcards(cards, on_quiz_drill=None, on_review=None):
-    # on_review(card, passed) is called whenever a student marks a card Mastered (True) or Needs Review (False)
+    # on_review(card, quality) is called whenever a student rates a card Hard (2), Good (4) or Easy (5)
     if not cards:
         st.info("No flashcards generated.")
         return
@@ -271,34 +290,21 @@ def display_flashcards(cards, on_quiz_drill=None, on_review=None):
         components.html(card_html, height=280)
 
         # Action Buttons
-        act_col1, act_col2, act_col3, act_col4 = st.columns([1, 1, 1, 1])
-        
-        with act_col1:
+        act_cols = st.columns(5)
+
+        with act_cols[0]:
             if st.button("⬅️ Previous", use_container_width=True):
                 st.session_state.card_study_idx = (curr_idx - 1) % len(active_deck)
                 st.rerun()
 
-        with act_col2:
-            if st.button("🔁 Need Review", type="secondary", use_container_width=True):
-                if on_review:
-                    on_review(current_card, False)
-                current_card["status"] = "review"
-                current_card["review_count"] = current_card.get("review_count", 0) + 1
-                _mark_seen(current_card)
-                st.session_state.card_study_idx = (curr_idx + 1) % len(active_deck)
-                st.rerun()
+        for col, (label, quality, status) in zip(act_cols[1:4], RATINGS):
+            with col:
+                if st.button(label, type="primary" if quality == 4 else "secondary", use_container_width=True):
+                    _rate_card(current_card, quality, status, on_review)
+                    st.session_state.card_study_idx = (curr_idx + 1) % len(active_deck)
+                    st.rerun()
 
-        with act_col3:
-            if st.button("✅ Mastered", type="primary", use_container_width=True):
-                if on_review:
-                    on_review(current_card, True)
-                current_card["status"] = "mastered"
-                current_card["review_count"] = 0
-                _mark_seen(current_card)
-                st.session_state.card_study_idx = (curr_idx + 1) % len(active_deck)
-                st.rerun()
-
-        with act_col4:
+        with act_cols[4]:
             if st.button("➡️ Next", use_container_width=True):
                 st.session_state.card_study_idx = (curr_idx + 1) % len(active_deck)
                 st.rerun()
@@ -315,6 +321,7 @@ def display_flashcards(cards, on_quiz_drill=None, on_review=None):
     #  VIEW MODE 2: GRID VIEW (BROWSE ALL)
     # ─────────────────────────────────────────────
     else:
+        st.caption("Rate a card with the buttons under it: " + " · ".join(label for label, _, _ in RATINGS))
         cols = st.columns(3)
         for idx, card in enumerate(active_deck):
             col_idx = idx % 3
@@ -331,24 +338,13 @@ def display_flashcards(cards, on_quiz_drill=None, on_review=None):
                 )
                 components.html(card_html, height=240)
 
-                # Status buttons
-                btn_col1, btn_col2 = st.columns(2)
-                with btn_col1:
-                    if st.button("✅ Mastered", key=f"master_{orig_i}"):
-                        if on_review:
-                            on_review(card, True)
-                        card["status"]       = "mastered"
-                        card["review_count"] = 0
-                        _mark_seen(card)
-                        st.rerun()
-                with btn_col2:
-                    if st.button("🔁 Review", key=f"review_{orig_i}"):
-                        if on_review:
-                            on_review(card, False)
-                        card["status"]        = "review"
-                        card["review_count"]  = card.get("review_count", 0) + 1
-                        _mark_seen(card)
-                        st.rerun()
+                # Rating buttons (emoji only: the columns are too narrow for words)
+                for btn_col, (label, quality, status) in zip(st.columns(3), RATINGS):
+                    icon, name = label.split(" ", 1)
+                    with btn_col:
+                        if st.button(icon, key=f"rate_{quality}_{orig_i}", help=name, use_container_width=True):
+                            _rate_card(card, quality, status, on_review)
+                            st.rerun()
 
                 # Audio
                 if st.button("🔊 Audio", key=f"audio_{orig_i}"):

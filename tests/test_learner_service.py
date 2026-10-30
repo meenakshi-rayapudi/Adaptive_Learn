@@ -101,6 +101,26 @@ class TestWithDatabase(unittest.TestCase):
         expected = (6 + svc.SESSION_TAIL_MINUTES) + svc.SESSION_TAIL_MINUTES
         self.assertEqual(svc.get_study_minutes("stu", days=1, now=now, session=self.session), expected)
 
+    def test_quizzes_and_flashcard_reviews_count_as_study_time(self):
+        when = minutes(300)
+        svc.log_quiz_attempt("stu", "D1", self.drill_quiz(), {}, seconds_spent=300, at=when, session=self.session)
+        svc.log_flashcard_review("stu", "D1", self.new_card(), 4, at=when, session=self.session)
+        # No chat or summary activity at all, yet: 5 minute quiz + flashcard in one session, plus the tail credit
+        expected = 5 + svc.SESSION_TAIL_MINUTES
+        self.assertEqual(svc.get_study_minutes("stu", days=1, now=minutes(310), session=self.session), expected)
+        dist = svc.get_study_time_distribution("stu", days=1, now=minutes(310), session=self.session)
+        self.assertEqual(dist["total_minutes"], expected)
+
+    def test_a_quiz_is_dated_from_when_it_started(self):
+        when = minutes(300)
+        attempt_id = svc.log_quiz_attempt("stu", "D1", self.drill_quiz(), {}, seconds_spent=300, at=when, session=self.session)
+        attempt = self.session.get(QuizAttempt, attempt_id)
+        self.assertEqual(attempt.completed_at, when)
+        self.assertEqual(attempt.started_at, when - dt.timedelta(seconds=300))
+
+        long_id = svc.log_quiz_attempt("stu", "D1", self.drill_quiz(), {}, seconds_spent=90_000, at=when, session=self.session)
+        self.assertEqual(self.session.get(QuizAttempt, long_id).started_at, when - dt.timedelta(hours=1))  # tab left open
+
     def test_old_activity_is_outside_the_window(self):
         svc.log_activity("stu", "chat_question", at=T0, session=self.session)
         self.assertEqual(svc.get_study_minutes("stu", days=1, now=T0 + dt.timedelta(days=5), session=self.session), 0.0)
@@ -187,11 +207,11 @@ class TestWithDatabase(unittest.TestCase):
 
     def test_flashcard_reviews_follow_the_sm2_schedule(self):
         card = self.new_card()
-        svc.log_flashcard_review("stu", "D1", card, True, session=self.session)
+        svc.log_flashcard_review("stu", "D1", card, 4, session=self.session)
         self.assertEqual((card["repetition_count"], card["interval_days"]), (1, 1))
-        svc.log_flashcard_review("stu", "D1", card, True, session=self.session)
+        svc.log_flashcard_review("stu", "D1", card, 4, session=self.session)
         self.assertEqual((card["repetition_count"], card["interval_days"]), (2, 6))
-        svc.log_flashcard_review("stu", "D1", card, False, session=self.session)
+        svc.log_flashcard_review("stu", "D1", card, 2, session=self.session)
         self.assertEqual((card["repetition_count"], card["interval_days"]), (0, 1))
 
         events = self.session.query(FlashcardEvent).order_by(FlashcardEvent.id).all()
@@ -200,10 +220,21 @@ class TestWithDatabase(unittest.TestCase):
         self.assertEqual(events[0].topic_id, "D1_T3")
         self.assertEqual(events[1].next_review_at - events[1].reviewed_at, dt.timedelta(days=6))
 
+    def test_hard_good_and_easy_ratings_move_the_schedule_differently(self):
+        hard, good, easy = self.new_card(), self.new_card(), self.new_card()
+        for card, quality in ((hard, 2), (good, 4), (easy, 5)):
+            svc.log_flashcard_review("stu", "D1", card, quality, session=self.session)
+        self.assertEqual(hard["repetition_count"], 0)                      # Hard: a miss, starts over
+        self.assertEqual((good["repetition_count"], easy["repetition_count"]), (1, 1))
+        self.assertLess(hard["ease_factor"], good["ease_factor"])          # Hard makes the card harder to schedule
+        self.assertGreater(easy["ease_factor"], good["ease_factor"])       # Easy pushes reviews further apart
+        self.assertEqual(
+            [e.quality for e in self.session.query(FlashcardEvent).order_by(FlashcardEvent.id)], [2, 4, 5])
+
     def test_a_reviewed_flashcard_feeds_the_mastery_feature(self):
         from engine.features import compute_feature_vector
         self.assertIsNone(compute_feature_vector("stu", "D1_T3", session=self.session).f)
-        svc.log_flashcard_review("stu", "D1", self.new_card(), True, session=self.session)
+        svc.log_flashcard_review("stu", "D1", self.new_card(), 4, session=self.session)
         self.assertGreater(compute_feature_vector("stu", "D1_T3", session=self.session).f, 0)
 
     def test_flashcard_with_a_placeholder_topic_is_tagged_once(self):
@@ -214,8 +245,8 @@ class TestWithDatabase(unittest.TestCase):
         try:
             card = self.new_card(topic_id="General")
             topics = [{"topic_id": "T2", "name": "Deadlocks", "description": ""}]
-            svc.log_flashcard_review("stu", "D1", card, True, topics=topics, session=self.session)
-            svc.log_flashcard_review("stu", "D1", card, True, topics=topics, session=self.session)
+            svc.log_flashcard_review("stu", "D1", card, 4, topics=topics, session=self.session)
+            svc.log_flashcard_review("stu", "D1", card, 4, topics=topics, session=self.session)
         finally:
             te.assign_topics_to_chunks = original
         self.assertEqual(card["topic_id"], "D1_T2")
@@ -223,7 +254,7 @@ class TestWithDatabase(unittest.TestCase):
 
     def test_flashcard_schedule_still_moves_without_a_student(self):
         card = self.new_card()
-        self.assertIsNone(svc.log_flashcard_review(None, "D1", card, True, session=self.session))
+        self.assertIsNone(svc.log_flashcard_review(None, "D1", card, 4, session=self.session))
         self.assertEqual(card["repetition_count"], 1)
 
     def test_nothing_is_saved_without_a_student_or_questions(self):

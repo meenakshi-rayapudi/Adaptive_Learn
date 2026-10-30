@@ -17,7 +17,6 @@ SESSION_DEFAULTS = {
     "quiz": None,
     "remedial_guide": None,
     "missed_questions": [],
-    "session_results": [],
     "messages": [],
     "latest_audio": None,
     "study_plan": None,

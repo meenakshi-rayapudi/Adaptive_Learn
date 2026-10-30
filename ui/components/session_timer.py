@@ -10,4 +10,4 @@ def show_session_timer(student_id: str):
         st.caption("⏸️ Session paused. Click anything to start a new one.")
     else:
         st.metric("⏱️ This study session", f"{session_minutes()} min")
-    st.caption(f"📅 Logged in the last 7 days: {get_study_minutes(student_id):.0f} min")
+    st.caption(f"📅 Studied in the last 7 days: {get_study_minutes(student_id):.0f} min")

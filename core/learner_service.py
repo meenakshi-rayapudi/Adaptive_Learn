@@ -109,15 +109,17 @@ def log_quiz_attempt(student_id: Optional[str], document_id: Optional[str], quiz
         now = at or dt.datetime.utcnow()
 
         latency_ms = None
+        started = now
         if seconds_spent is not None:
             latency_ms = int(min(max(seconds_spent * 1000 / len(quiz), 500), 120_000))  # same bounds as feature T
+            started = now - dt.timedelta(seconds=min(seconds_spent, 3600))  # so study time counts the whole quiz
 
         tagged = [t for t in topic_ids if t]
         attempt = QuizAttempt(
             student_id=student_id, document_id=document_id,
             topic_id=Counter(tagged).most_common(1)[0][0] if tagged else None,
             score=sum(correct), total_questions=len(quiz), accuracy=sum(correct) / len(quiz),
-            started_at=now, completed_at=now,
+            started_at=started, completed_at=now,
         )
         session.add(attempt)
         session.flush()
@@ -141,16 +143,16 @@ def log_quiz_attempt(student_id: Optional[str], document_id: Optional[str], quiz
             session.close()
 
 
-def log_flashcard_review(student_id: Optional[str], document_id: Optional[str], card: Dict, passed: bool,
+def log_flashcard_review(student_id: Optional[str], document_id: Optional[str], card: Dict, quality: int,
                          topics: Optional[List[Dict]] = None, at: Optional[dt.datetime] = None,
                          session=None) -> Optional[int]:
     """
     Saves one flashcard review and moves the card's spaced-repetition (SM-2) schedule forward.
-    passed=True is a good recall (quality 4), passed=False a miss (quality 2). The schedule lives on the
-    card itself (ease_factor, interval_days, repetition_count) and is updated even if saving fails.
+    `quality` is the SM-2 recall score from the student's rating: Hard = 2 (a miss, the schedule
+    resets), Good = 4, Easy = 5. The schedule lives on the card itself (ease_factor, interval_days,
+    repetition_count) and is updated even if saving fails.
     Returns the saved event id, or None. Never raises.
     """
-    quality = 4 if passed else 2
     card["ease_factor"], card["interval_days"], card["repetition_count"] = update_card_review(
         card.get("ease_factor", 2.5), card.get("interval_days", 0), card.get("repetition_count", 0), quality)
 
@@ -234,21 +236,32 @@ def minutes_from_timestamps(times: List[dt.datetime]) -> float:
     return round(total, 1)
 
 
+def _study_timestamps(session, student_id: str, since: dt.datetime, until: dt.datetime) -> List[dt.datetime]:
+    """
+    Every moment we know the student was studying, oldest first: chat messages and summary reads,
+    the start and end of each quiz, and each flashcard review.
+    """
+    times = []
+    for column, student_column in (
+        (EngagementEvent.created_at, EngagementEvent.student_id),
+        (QuizAttempt.started_at, QuizAttempt.student_id),
+        (QuizAttempt.completed_at, QuizAttempt.student_id),
+        (FlashcardEvent.reviewed_at, FlashcardEvent.student_id),
+    ):
+        rows = session.query(column).filter(student_column == student_id, column >= since, column <= until).all()
+        times.extend(row[0] for row in rows)
+    return sorted(times)
+
+
 def get_study_minutes(student_id: str, days: int = 7, now: Optional[dt.datetime] = None, session=None) -> float:
-    """Total minutes studied in the last `days` days."""
+    """Total minutes studied in the last `days` days (chatting, quizzes and flashcards all count)."""
     now = now or dt.datetime.utcnow()
     since = now - dt.timedelta(days=days)
 
     own_session = session is None
     session = session or get_session()
     try:
-        rows = (
-            session.query(EngagementEvent.created_at)
-            .filter(EngagementEvent.student_id == student_id,
-                    EngagementEvent.created_at >= since, EngagementEvent.created_at <= now)
-            .all()
-        )
-        return minutes_from_timestamps([r[0] for r in rows])
+        return minutes_from_timestamps(_study_timestamps(session, student_id, since, now))
     finally:
         if own_session:
             session.close()
@@ -375,17 +388,7 @@ def get_study_time_distribution(student_id: str, days: int = 7, now: Optional[dt
     own_session = session is None
     session = session or get_session()
     try:
-        rows = (
-            session.query(EngagementEvent.created_at)
-            .filter(
-                EngagementEvent.student_id == student_id,
-                EngagementEvent.created_at >= since,
-                EngagementEvent.created_at <= now_naive,
-            )
-            .order_by(EngagementEvent.created_at.asc())
-            .all()
-        )
-        timestamps = [r[0] for r in rows if r[0] is not None]
+        timestamps = _study_timestamps(session, student_id, since, now_naive)
 
         # Group timestamps by date for daily sessions
         by_date: Dict[str, List[dt.datetime]] = {}

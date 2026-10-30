@@ -17,7 +17,7 @@ from core.engine import AgentArtifactStore, TutorAgent
 
 class TestSchemasAndParsing(unittest.TestCase):
     def test_flashcard_schema(self):
-        item = FlashcardItem(front="What is ATP?", back="Adenosine Triphosphate, cellular energy currency.")
+        item = FlashcardItem(front="What is ATP?", back="Adenosine Triphosphate, cellular energy currency.", topic_id="D0001_T1")
         self.assertEqual(item.front, "What is ATP?")
         self.assertEqual(item.difficulty, "medium")
 
@@ -27,7 +27,8 @@ class TestSchemasAndParsing(unittest.TestCase):
             type="true_false",
             options=["True", "False"],
             answer="True",
-            explanation="Mitochondria produce cellular ATP."
+            explanation="Mitochondria produce cellular ATP.",
+            topic_id="D0001_T1"
         )
         self.assertEqual(item.type, "true_false")
         self.assertEqual(item.answer, "True")

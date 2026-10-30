@@ -16,9 +16,9 @@ def _sentence(reason: dict):
         else:
             text = f"your accuracy on this topic is {'only ' if raises else ''}{value:.0%}"
     elif feature == "Q" and value is not None:
-        text = f"your recent quiz results overall are {'below' if raises else 'above'} average ({value:.0%} correct)"
+        text = f"your recent quiz results overall ({value:.0%} correct) {'push the risk up' if raises else 'help keep the risk down'}"
     elif feature == "T" and value is not None:
-        text = f"you take {'longer' if raises else 'less time'} than average per question here (about {value / 1000:.0f} seconds)"
+        text = f"your answer speed (about {value / 1000:.0f} seconds per question) {'pushes the risk up' if raises else 'helps keep the risk down'}"
     elif feature == "R" and value is not None:
         text = f"it has been {value:.0f} days since you last studied it" if raises else f"you studied it recently ({value:.0f} days ago)"
     elif feature == "F" and value is not None:

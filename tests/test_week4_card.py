@@ -29,9 +29,9 @@ class TestPlainEnglishReasons(unittest.TestCase):
     def test_recent_results_and_response_time(self):
         bullets = self.words(reason("Q", 0.25, "raises"), reason("T", 14500, "raises"), reason("T", 3000, "lowers"))
         self.assertEqual(bullets, [
-            "🔺 Your recent quiz results overall are below average (25% correct)",
-            "🔺 You take longer than average per question here (about 14 seconds)",
-            "🟢 You take less time than average per question here (about 3 seconds)",
+            "🔺 Your recent quiz results overall (25% correct) push the risk up",
+            "🔺 Your answer speed (about 14 seconds per question) pushes the risk up",
+            "🟢 Your answer speed (about 3 seconds per question) helps keep the risk down",
         ])
 
     def test_never_quizzed_is_said_plainly(self):

@@ -1,9 +1,8 @@
-import datetime
 import time
 import streamlit as st
 from core.learner_service import log_quiz_attempt
 from ui.components.drill import show_weak_topic_drill, show_drill_banner
-from utils.analytics import save_quiz_result
+from ui.components.recommendation_banner import show_recommendation_banner
 
 
 def render_quiz_tab(send_agent_goal) -> None:
@@ -12,6 +11,7 @@ def render_quiz_tab(send_agent_goal) -> None:
     st.subheader("Practice Assessment & Cognitive Remediation")
     st.caption("AI-generated assessments with automated error diagnosis and personalized remedial guides.")
 
+    show_recommendation_banner()
     show_weak_topic_drill()
     st.divider()
 
@@ -116,15 +116,6 @@ def _render_active_quiz(send_agent_goal) -> None:
             st.session_state.quiz, st.session_state.user_answers, topics=st.session_state.get("topics"),
             seconds_spent=seconds_spent,
         )
-
-        # Persist score to CSV analytics
-        save_quiz_result(topic, score, total_q)
-        st.session_state.session_results.append({
-            "topic": topic,
-            "correct": accuracy,
-            "type": "quiz",
-            "date": datetime.date.today().strftime("%Y-%m-%d")
-        })
 
         # If there are missed questions, have agent generate remedial guide
         if st.session_state.missed_questions:

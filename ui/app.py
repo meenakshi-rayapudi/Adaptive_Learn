@@ -11,6 +11,7 @@ from ui.components.sidebar import show_sidebar
 from ui.components.chat import chat_interface
 from ui.components.flashcards_tab import render_flashcards_tab
 from ui.components.quiz_tab import render_quiz_tab
+from ui.components.recommendation_banner import show_recommendation_banner
 from ui.styles.css import load_css
 from ui.session_state import init_session_state
 from ui.components.analytics_dashboard import render_learning_analytics_dashboard
@@ -80,6 +81,8 @@ tab1, tab2, tab3, tab4 = st.tabs(["💬 Study Companion (Chat)", "🗂️ Knowle
 with tab1:
     st.subheader("Autonomous Academic Companion")
     st.caption("Chat with your AI Tutor. Ask for summaries, deep conceptual explanations, practice problems, or audio narration.")
+
+    show_recommendation_banner()
 
     if not st.session_state.get("current_file"):
         st.info("👋 Upload a PDF textbook or paste a YouTube lecture link in the sidebar to get started!")

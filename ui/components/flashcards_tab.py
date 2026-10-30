@@ -48,9 +48,9 @@ def render_flashcards_tab(send_agent_goal) -> None:
             del st.session_state.user_answers
         st.rerun()
 
-    def on_review(card, passed):
+    def on_review(card, quality):
         log_flashcard_review(st.session_state.get("student_id"), st.session_state.get("document_id"),
-                             card, passed, topics=st.session_state.get("topics"))
+                             card, quality, topics=st.session_state.get("topics"))
 
     if st.session_state.flashcards:
         display_flashcards(st.session_state.flashcards, on_quiz_drill=on_quiz_drill, on_review=on_review)
